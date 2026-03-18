@@ -1,0 +1,146 @@
+# ============================================================================
+# Ablation: CycleGAN Baseline
+# ============================================================================
+#
+# Implements the standard CycleGAN (Zhu et al., ICCV 2017) as a baseline to
+# demonstrate the semantic-inversion artifact that SA-CUT resolves.
+#
+# Key differences from default.yaml
+# ----------------------------------
+#   model.type            = cyclegan     (two generators, two discriminators)
+#   generator.input_nc    = 1            (TPAF only — no mask channel)
+#   generator_reverse.*   = NEW          (G_HE2TPAF: H&E → TPAF)
+#   discriminator_tpaf.*  = NEW          (D_TPAF: discriminates TPAF domain)
+#   losses.lambda_cycle   = 10.0         (forward + backward cycle consistency)
+#   losses.lambda_idt     = 5.0          (= 0.5 * lambda_cycle, colour anchor)
+#   losses.lambda_patchnce = 0.0         (PatchNCE disabled — replaced by cycle)
+#   losses.lambda_struct  = 0.0          (no mask-conditioned loss)
+#   mask_provider.mode    = none         (no mask needed)
+#
+# Architecture
+# ------------
+#   G_TPAF2HE :  1-ch TPAF → 3-ch H&E    (ResNet-9, ngf=64)
+#   G_HE2TPAF :  3-ch H&E  → 1-ch TPAF   (ResNet-9, ngf=64)
+#   D_HE      :  PatchGAN on H&E          (input_nc=3)
+#   D_TPAF    :  PatchGAN on TPAF         (input_nc=1)
+#
+# Expected failure mode
+# ---------------------
+# Without structural anchoring, CycleGAN maps dark nuclear voids in TPAF to
+# bright eosin-pink (semantic inversion).  This is the central problem SA-CUT
+# solves; this config provides the baseline measurement of that artifact.
+#
+# Loss objective
+# --------------
+# L_total = L_adv(G_TPAF2HE, D_HE)
+#         + L_adv(G_HE2TPAF, D_TPAF)
+#         + lambda_cycle * (L_cyc_forward + L_cyc_backward)
+#         + lambda_idt   * (L_idt_A + L_idt_B)
+#
+# Reference: Zhu et al., 2017 — Table 1 hyperparameter recommendations.
+# ============================================================================
+
+experiment:
+  name: ablation_cyclegan
+  checkpoint_dir: checkpoints/ablation_cyclegan
+  log_dir: results/logs/ablation_cyclegan
+  use_wandb: false
+  use_tensorboard: true
+
+# Trainer dispatch: 'cyclegan' triggers the CycleGAN training branch.
+model:
+  type: cyclegan
+
+# ------------------------------------------------------------
+# Data  (inherits default data settings)
+# ------------------------------------------------------------
+# No changes to patch_size, num_workers, augmentation, etc.
+
+# ------------------------------------------------------------
+# Mask provider — disabled for this baseline
+# ------------------------------------------------------------
+mask_provider:
+  mode: none                         # CycleGAN does not use nuclear masks
+
+# ------------------------------------------------------------
+# Generator G_TPAF2HE  (TPAF → virtual H&E)
+# ------------------------------------------------------------
+generator:
+  input_nc: 1                        # TPAF only — mask channel NOT added
+  output_nc: 3                       # RGB H&E
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance                # required for batch_size=1
+  use_dropout: false
+  mask_injection: none               # no mask injection
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Generator G_HE2TPAF  (virtual H&E → TPAF)   [CycleGAN-only]
+# ------------------------------------------------------------
+generator_reverse:
+  input_nc: 3                        # RGB H&E input
+  output_nc: 1                       # 1-ch TPAF output
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator D_HE  (discriminates H&E domain)
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3                        # 3-ch RGB H&E
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator D_TPAF  (discriminates TPAF domain)  [CycleGAN-only]
+# ------------------------------------------------------------
+discriminator_tpaf:
+  input_nc: 1                        # 1-ch grayscale TPAF
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0                    # adversarial weight (applied to both D)
+  lambda_cycle: 10.0                 # cycle-consistency weight (Zhu et al., 2017)
+  lambda_idt: 5.0                    # identity loss = 0.5 * lambda_cycle
+  lambda_patchnce: 0.0               # PatchNCE disabled for CycleGAN baseline
+  lambda_struct: 0.0                 # structure loss disabled (no mask)
+  gan_mode: lsgan                    # LSGAN for training stability
+  # PatchNCE parameters — unused (lambda_patchnce=0) but kept for schema consistency
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  patchnce_mode: standard            # ignored when lambda_patchnce=0
+  struct_loss_mode: threshold        # ignored when lambda_struct=0
+  struct_warmup_epochs: 0
+  struct_rampup_epochs: 0
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1
