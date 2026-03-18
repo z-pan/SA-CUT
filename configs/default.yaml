@@ -1,0 +1,111 @@
+# SA-CUT Default Configuration
+# All hyperparameters for Structure-Anchored Contrastive Unpaired Translation
+# Override specific keys via CLI: --config configs/default.yaml --set training.batch_size=2
+
+experiment:
+  name: sa_cut_default
+  # Format: {method}_{date}_{note}, e.g. sa_cut_20260317_baseline
+  log_dir: results/logs
+  checkpoint_dir: checkpoints
+  save_freq: 10         # save checkpoint every N epochs
+  log_freq: 100         # log metrics every N iterations
+  vis_freq: 500         # save sample images every N iterations
+  use_wandb: false
+  use_tensorboard: true
+
+# ------------------------------------------------------------
+# Data
+# ------------------------------------------------------------
+data:
+  tpaf_dir: data/raw/tpaf          # directory of TPAF patches / WSI files
+  he_dir: data/raw/he              # directory of H&E patches / WSI files
+  patch_size: 256
+  tpaf_channels: 1                 # 1 (grayscale) or 2 (NADH + FAD)
+  # TPAF normalization: percentile clipping [p_low, p_high] then scale to [0, 1]
+  tpaf_norm_percentile_low: 1.0
+  tpaf_norm_percentile_high: 99.0
+  he_norm_range: [-1, 1]           # H&E normalized to [-1, 1] for generator output
+  num_workers: 4
+  pin_memory: true
+  augment: true
+
+# ------------------------------------------------------------
+# Segmentation model (frozen)
+# ------------------------------------------------------------
+segmentation:
+  checkpoint: checkpoints/afn_deseg.pth
+  output_type: binary              # binary | soft (probability map)
+  # Mask dtype at runtime must be float32 in [0, 1]
+  log_mask_stats: true             # log coverage ratio & component stats each epoch
+
+# ------------------------------------------------------------
+# Generator
+# ------------------------------------------------------------
+generator:
+  input_nc: 2                      # TPAF (1ch) + Mask (1ch); set 3 for NADH+FAD+Mask
+  output_nc: 3                     # RGB H&E output
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance              # instance (required for batch_size=1)
+  use_dropout: false
+  mask_injection: early_fusion     # early_fusion | multi_scale
+  init_type: normal                # normal | xavier | kaiming | orthogonal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0
+  lambda_struct: 5.0               # high — structure preservation is the core contribution
+  lambda_idt: 0.5                  # identity loss; set 0.0 to disable
+  gan_mode: lsgan                  # lsgan | vanilla | wgangp
+  n_patchnce_layers: 5             # encoder layers from which to sample NCE patches
+  n_patches_per_layer: 256
+  struct_loss_mode: threshold      # threshold | pretrained_detector
+  # Thresholding parameters for struct_loss_mode: threshold
+  struct_threshold_hematoxylin: 0.3  # normalized H channel threshold for nucleus detection
+  # Warm-up: L_struct is disabled for the first N epochs
+  struct_warmup_epochs: 10
+  # Linear ramp-up of lambda_struct over N epochs after warm-up ends
+  struct_rampup_epochs: 5
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200                    # epochs at full LR (Phase 1+2)
+  n_epochs_decay: 200              # epochs for linear LR decay to 0 (Phase 3)
+  seed: 42
+  # Mixed precision training
+  use_amp: false
+  # Gradient clipping (0 = disabled)
+  grad_clip_norm: 0.0
+  # How many D steps per G step
+  d_steps_per_g: 1
+
+# ------------------------------------------------------------
+# Evaluation (run after training or on-the-fly)
+# ------------------------------------------------------------
+evaluation:
+  fid_real_dir: data/raw/he        # real H&E images for FID reference
+  fid_batch_size: 50
+  fid_dims: 2048                   # InceptionV3 feature dim
+  struct_iou_threshold: 0.5        # IoU threshold for nuclei matching

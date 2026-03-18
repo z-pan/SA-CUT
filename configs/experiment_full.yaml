@@ -1,0 +1,46 @@
+# SA-CUT Full Model — All Components Active
+# This is the primary experimental configuration.
+# Inherits all unspecified keys from default.yaml at runtime.
+
+experiment:
+  name: sa_cut_full
+  use_wandb: true
+  use_tensorboard: true
+
+generator:
+  input_nc: 2                      # TPAF (1ch) + Mask (1ch)
+  output_nc: 3
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: early_fusion
+
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0
+  lambda_struct: 5.0               # full structure loss weight
+  lambda_idt: 0.5
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  struct_loss_mode: threshold
+  struct_warmup_epochs: 10         # Phase 1: adv + patchnce only
+  struct_rampup_epochs: 5          # linear ramp from 0 → lambda_struct
+
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false

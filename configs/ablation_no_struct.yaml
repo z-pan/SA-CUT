@@ -1,0 +1,17 @@
+# Ablation: SA-CUT without Structure Loss
+# SA-PatchNCE with mask-partitioned patch sampling is active,
+# but L_struct (mask consistency) is disabled (lambda_struct=0).
+# Inherits all unspecified keys from default.yaml at runtime.
+
+experiment:
+  name: ablation_sa_cut_no_struct
+
+generator:
+  input_nc: 2                      # TPAF + Mask (same as full SA-CUT)
+  mask_injection: early_fusion
+
+losses:
+  lambda_struct: 0.0               # L_struct disabled — this is the ablated component
+  struct_warmup_epochs: 0          # irrelevant, struct is off
+  struct_rampup_epochs: 0
+  # All other losses (adv, patchnce, idt) use default.yaml values
