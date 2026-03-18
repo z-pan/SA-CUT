@@ -1,0 +1,128 @@
+# ============================================================================
+# Ablation: CUT with Mask as Input (CUT + Mask)
+# ============================================================================
+#
+# Extends the CUT baseline by concatenating the nuclear segmentation mask as
+# a second input channel to the generator.  The mask provides spatial
+# structural information but the contrastive loss does NOT exploit it in a
+# region-aware way (standard PatchNCE, not SA-PatchNCE).
+#
+# This config isolates the contribution of region-aware patch sampling (the
+# SA-PatchNCE innovation) from the simpler baseline of just conditioning the
+# generator on the mask.
+#
+# Key differences from default.yaml
+# ----------------------------------
+#   model.type              = cut
+#   generator.input_nc      = 2              (TPAF + Mask — mask as 2nd input channel)
+#   generator.mask_injection = early_fusion  (mask concatenated at encoder input)
+#   losses.patchnce_mode    = standard       (mask=None passed to SA-PatchNCE)
+#   losses.lambda_struct    = 0.0            (structure loss disabled)
+#   losses.lambda_idt       = 0.0            (disabled for fair comparison)
+#   struct_warmup_epochs    = 0
+#
+# Key differences from ablation_cut_baseline.yaml
+# ------------------------------------------------
+#   generator.input_nc      2 vs 1           (mask is now a 2nd input channel)
+#   generator.mask_injection early_fusion     (enabled — mask goes into encoder)
+#   mask_provider.mode      precomputed       (mask must be loaded)
+#
+# Key differences from ablation_sa_cut_no_struct.yaml
+# ----------------------------------------------------
+#   losses.patchnce_mode    standard vs region_aware
+#   The mask conditions the generator (early_fusion) but the NCE loss does
+#   NOT use it for partition-based sampling.  SA-CUT no-struct uses
+#   SA-PatchNCE, which does region-partition the negatives.
+#
+# Architecture
+# ------------
+#   G_TPAF2HE :  2-ch [TPAF|Mask] → 3-ch H&E  (ResNet-9, ngf=64)
+#   D_HE      :  PatchGAN on H&E                (input_nc=3)
+#   MLP heads :  standard PatchNCE (mask=None in SA-PatchNCE)
+#
+# Loss objective
+# --------------
+# L_total = L_adv(G, D)  +  lambda_patchnce * L_PatchNCE(G, mask=None)
+#
+# ============================================================================
+
+experiment:
+  name: ablation_cut_mask_input
+  checkpoint_dir: checkpoints/ablation_cut_mask_input
+  log_dir: results/logs/ablation_cut_mask_input
+  use_wandb: false
+  use_tensorboard: true
+
+model:
+  type: cut
+
+# ------------------------------------------------------------
+# Mask provider — precomputed (mask loaded as 2nd input channel)
+# ------------------------------------------------------------
+mask_provider:
+  mode: precomputed                  # mask loaded from disk; injected as input channel
+  mask_dir: data/patches/masks       # must match the masks used by SA-CUT configs
+  output_type: binary
+  binarize_threshold: 0.5
+  log_mask_stats: true
+
+# ------------------------------------------------------------
+# Generator  (2-channel input: TPAF + Mask)
+# ------------------------------------------------------------
+generator:
+  input_nc: 2                        # channel 0: TPAF, channel 1: nuclear mask
+  output_nc: 3
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: early_fusion       # mask concatenated at the first conv layer
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator  (unchanged from default)
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0               # standard PatchNCE active
+  lambda_struct: 0.0                 # L_struct disabled
+  lambda_idt: 0.0                    # identity loss disabled for fair comparison
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  # patchnce_mode=standard: mask is NOT passed to the NCE loss.
+  # The generator receives the mask via early_fusion (input_nc=2) but the
+  # contrastive loss samples patches without nuclear/stromal partitioning.
+  # Compare with ablation_sa_cut_no_struct.yaml where patchnce_mode=region_aware.
+  patchnce_mode: standard
+  struct_loss_mode: threshold        # irrelevant (lambda_struct=0)
+  struct_warmup_epochs: 0
+  struct_rampup_epochs: 0
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1

@@ -1,0 +1,122 @@
+# ============================================================================
+# Ablation: SA-CUT without Structure Loss  (SA-PatchNCE only)
+# ============================================================================
+#
+# Full SA-CUT architecture with SA-PatchNCE (region-aware contrastive loss)
+# but without the structure consistency loss L_struct.
+#
+# This config isolates the contribution of L_struct by comparing against:
+#   - ablation_cut_mask_input.yaml : same architecture, standard PatchNCE
+#   - experiment_sa_cut_full.yaml  : same NCE loss, adds L_struct
+#
+# Key differences from default.yaml
+# ----------------------------------
+#   losses.lambda_struct    = 0.0   (L_struct disabled — the ablated component)
+#   losses.patchnce_mode    = region_aware  (SA-PatchNCE active)
+#   struct_warmup_epochs    = 0     (irrelevant, struct is off)
+#   struct_rampup_epochs    = 0
+#
+# Key differences from ablation_cut_mask_input.yaml
+# --------------------------------------------------
+#   losses.patchnce_mode    region_aware vs standard
+#   The nuclear mask is passed to the NCE loss for partition-based sampling
+#   (nuclear and stromal patches are treated as cross-region negatives).
+#
+# Key differences from experiment_sa_cut_full.yaml
+# -------------------------------------------------
+#   losses.lambda_struct    0.0 vs 5.0  (structure loss is what we ablate)
+#   struct_warmup_epochs    0 vs 10
+#   struct_rampup_epochs    0 vs 5
+#
+# Architecture
+# ------------
+#   G_TPAF2HE  :  2-ch [TPAF|Mask] → 3-ch H&E  (ResNet-9, ngf=64)
+#   D_HE       :  PatchGAN on H&E               (input_nc=3)
+#   SA-PatchNCE:  Region-aware NCE, mask used for nuclear/stroma partition
+#
+# Loss objective
+# --------------
+# L_total = L_adv(G, D)
+#         + lambda_patchnce * L_SA-PatchNCE(G, mask)
+#         + lambda_idt      * L_idt
+#
+# ============================================================================
+
+experiment:
+  name: ablation_sa_cut_no_struct
+  checkpoint_dir: checkpoints/ablation_sa_cut_no_struct
+  log_dir: results/logs/ablation_sa_cut_no_struct
+  use_wandb: false
+  use_tensorboard: true
+
+model:
+  type: sa_cut
+
+# ------------------------------------------------------------
+# Mask provider — precomputed (same as full SA-CUT)
+# ------------------------------------------------------------
+mask_provider:
+  mode: precomputed
+  mask_dir: data/patches/masks
+  output_type: binary
+  binarize_threshold: 0.5
+  log_mask_stats: true
+
+# ------------------------------------------------------------
+# Generator  (2-channel: TPAF + Mask)
+# ------------------------------------------------------------
+generator:
+  input_nc: 2                        # TPAF (ch 0) + nuclear mask (ch 1)
+  output_nc: 3
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: early_fusion
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator  (unchanged)
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0
+  lambda_struct: 0.0                 # ← THE ABLATED COMPONENT
+  lambda_idt: 0.5
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  # patchnce_mode=region_aware: nuclear mask is passed to SA-PatchNCE.
+  # Cross-region negatives are enforced; only L_struct is removed.
+  patchnce_mode: region_aware
+  struct_loss_mode: threshold        # irrelevant (lambda_struct=0)
+  struct_warmup_epochs: 0            # no warm-up needed when struct is off
+  struct_rampup_epochs: 0
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1

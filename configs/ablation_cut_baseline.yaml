@@ -1,0 +1,117 @@
+# ============================================================================
+# Ablation: CUT Baseline (Standard CUT, no mask)
+# ============================================================================
+#
+# Implements standard Contrastive Unpaired Translation (Park et al., ECCV 2020)
+# with no structural modifications.  This isolates the contribution of adding
+# nuclear mask information to the translation framework.
+#
+# Key differences from default.yaml
+# ----------------------------------
+#   model.type              = cut            (single G, single D, no mask)
+#   generator.input_nc      = 1              (TPAF only)
+#   generator.mask_injection = none          (mask channel removed from input)
+#   losses.patchnce_mode    = standard       (mask=None → standard PatchNCE fallback
+#                                             inside RegionAwarePatchNCE)
+#   losses.lambda_struct    = 0.0            (L_struct disabled)
+#   losses.lambda_idt       = 0.0            (omitted for fair comparison with
+#                                             CUT paper which uses lambda_idt=0)
+#   mask_provider.mode      = none           (no mask computed or loaded)
+#   struct_warmup_epochs    = 0              (struct is off — warm-up irrelevant)
+#
+# Architecture
+# ------------
+#   G_TPAF2HE :  1-ch TPAF → 3-ch H&E    (ResNet-9, ngf=64)
+#   D_HE      :  PatchGAN on H&E          (input_nc=3)
+#   MLP heads :  standard PatchNCE projection (mask=None path in SA-PatchNCE)
+#
+# PatchNCE mode detail
+# --------------------
+# RegionAwarePatchNCE.forward() is called with mask=None.  This synthesises an
+# all-zero mask internally, which causes every layer to trigger the standard
+# PatchNCE fallback (no nuclear/stromal partition).  The loss is therefore
+# mathematically identical to the original CUT PatchNCE objective.
+#
+# Loss objective
+# --------------
+# L_total = L_adv(G, D)  +  lambda_patchnce * L_PatchNCE(G)
+#
+# Reference: Park et al., "Contrastive Learning for Unpaired Image-to-Image
+# Translation," ECCV 2020.
+# ============================================================================
+
+experiment:
+  name: ablation_cut_baseline
+  checkpoint_dir: checkpoints/ablation_cut_baseline
+  log_dir: results/logs/ablation_cut_baseline
+  use_wandb: false
+  use_tensorboard: true
+
+model:
+  type: cut
+
+# ------------------------------------------------------------
+# Mask provider — disabled
+# ------------------------------------------------------------
+mask_provider:
+  mode: none                         # standard CUT does not use segmentation masks
+
+# ------------------------------------------------------------
+# Generator  (TPAF → H&E, single channel input)
+# ------------------------------------------------------------
+generator:
+  input_nc: 1                        # TPAF only — no mask channel
+  output_nc: 3
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: none               # mask is not injected at any scale
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator  (unchanged from default)
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0               # standard PatchNCE active
+  lambda_struct: 0.0                 # L_struct disabled
+  lambda_idt: 0.0                    # identity loss disabled (CUT paper default)
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  # patchnce_mode=standard causes the trainer to call forward(mask=None),
+  # triggering the all-zero-mask fallback in RegionAwarePatchNCE and
+  # reproducing the original CUT loss exactly.
+  patchnce_mode: standard
+  struct_loss_mode: threshold        # irrelevant (lambda_struct=0)
+  struct_warmup_epochs: 0
+  struct_rampup_epochs: 0
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1

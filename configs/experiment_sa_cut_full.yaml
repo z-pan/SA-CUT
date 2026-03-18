@@ -1,0 +1,144 @@
+# ============================================================================
+# SA-CUT Full Model — All Components Active
+# ============================================================================
+#
+# This is the primary experimental configuration and the expected best-
+# performing entry in the ablation table.  It combines:
+#
+#   1. Mask-conditioned generator (early_fusion, input_nc=2)
+#   2. Region-aware contrastive loss (SA-PatchNCE, patchnce_mode=region_aware)
+#   3. Structure consistency loss (L_struct, lambda_struct=5.0)
+#   4. Three-phase training protocol (warm-up → full → LR decay)
+#
+# Relationship to other configs
+# ------------------------------
+#   vs ablation_cut_baseline       : adds mask input + SA-PatchNCE + L_struct
+#   vs ablation_cut_mask_input     : upgrades PatchNCE to SA-PatchNCE + adds L_struct
+#   vs ablation_sa_cut_no_struct   : adds L_struct (the one remaining component)
+#
+# Training protocol  (see CLAUDE.md §Training Protocol)
+# -------------------------------------------------------
+#   Phase 1 — Warm-up      (epochs  0 …  9) : L_adv + L_SA-PatchNCE
+#   Phase 2 — Full         (epochs 10 … 199): all losses; L_struct ramps
+#                                             linearly 0→5.0 over epochs 10–14
+#   Phase 3 — LR decay     (epochs 200…399) : linear LR decay to 0
+#
+# Why warm-up is mandatory
+# ------------------------
+# During Phase 1 the generator output does not yet resemble H&E staining.
+# Activating L_struct immediately produces garbage gradients from the HED
+# colour-deconvolution path.  After warm-up, the generator has learned the
+# basic TPAF → H&E colour distribution and the HED extraction becomes
+# meaningful.  See CLAUDE.md §Common Pitfalls, item 7.
+#
+# Loss objective
+# --------------
+# L_total = L_adv
+#         + lambda_patchnce * L_SA-PatchNCE(mask)
+#         + w(t)            * lambda_struct * L_struct      [w=0 during warm-up]
+#         + lambda_idt      * L_idt
+#
+# ============================================================================
+
+experiment:
+  name: sa_cut_full
+  checkpoint_dir: checkpoints/sa_cut_full
+  log_dir: results/logs/sa_cut_full
+  use_wandb: true
+  use_tensorboard: true
+
+model:
+  type: sa_cut
+
+# ------------------------------------------------------------
+# Data
+# ------------------------------------------------------------
+data:
+  tpaf_dir: data/raw/tpaf
+  he_dir: data/raw/he
+  patch_size: 256
+  tpaf_channels: 1
+  tpaf_norm_percentile_low: 1.0
+  tpaf_norm_percentile_high: 99.0
+  he_norm_range: [-1, 1]
+  num_workers: 4
+  pin_memory: true
+  augment: true
+
+# ------------------------------------------------------------
+# Mask provider
+# ------------------------------------------------------------
+mask_provider:
+  mode: precomputed
+  mask_dir: data/patches/masks
+  output_type: binary
+  binarize_threshold: 0.5
+  log_mask_stats: true               # log coverage + component stats each epoch
+
+# ------------------------------------------------------------
+# Generator  (2-channel: TPAF + Mask)
+# ------------------------------------------------------------
+generator:
+  input_nc: 2                        # TPAF (ch 0) + nuclear mask (ch 1)
+  output_nc: 3                       # RGB H&E
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: early_fusion       # mask concatenated at encoder input
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Discriminator
+# ------------------------------------------------------------
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  init_type: normal
+  init_gain: 0.02
+
+# ------------------------------------------------------------
+# Losses
+# ------------------------------------------------------------
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0
+  lambda_struct: 5.0                 # high weight — structure preservation is the
+                                     # core SA-CUT contribution (see CLAUDE.md)
+  lambda_idt: 0.5
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  patchnce_mode: region_aware        # SA-PatchNCE: cross-region negatives enforced
+  struct_loss_mode: threshold        # differentiable HED + sigmoid threshold
+  struct_threshold_hematoxylin: 0.3
+  struct_warmup_epochs: 10           # Phase 1: L_struct disabled for first 10 epochs
+  struct_rampup_epochs: 5            # Phase 2: L_struct weight ramps 0→5.0 over 5 epochs
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 2.0e-4
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200                      # Phases 1+2: full LR
+  n_epochs_decay: 200                # Phase 3: linear LR decay
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+evaluation:
+  fid_real_dir: data/raw/he
+  fid_batch_size: 50
+  fid_dims: 2048
+  struct_iou_threshold: 0.5
