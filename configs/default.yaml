@@ -30,12 +30,22 @@ data:
   augment: true
 
 # ------------------------------------------------------------
-# Segmentation model (frozen)
+# Mask provider (frozen — never trained during SA-CUT)
+# mode: precomputed  → load pre-saved binary/soft mask .npy/.png files
+# mode: cellpose     → run Cellpose-SAM at training time (slower, no pre-save step)
 # ------------------------------------------------------------
-segmentation:
-  checkpoint: checkpoints/afn_deseg.pth
+mask_provider:
+  mode: precomputed                # precomputed | cellpose
+  mask_dir: data/patches/masks     # used when mode=precomputed
+  cellpose_checkpoint: checkpoints/cellpose_sam_tpaf.pth  # used when mode=cellpose
+  cellpose_model_type: cyto3
+  cellpose_diameter: 30            # expected nucleus diameter in pixels
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_gpu: true
   output_type: binary              # binary | soft (probability map)
   # Mask dtype at runtime must be float32 in [0, 1]
+  binarize_threshold: 0.5          # threshold applied when output_type=binary
   log_mask_stats: true             # log coverage ratio & component stats each epoch
 
 # ------------------------------------------------------------
