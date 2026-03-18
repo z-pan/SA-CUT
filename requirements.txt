@@ -1,0 +1,41 @@
+# SA-CUT: Structure-Anchored Virtual H&E Staining
+# Python 3.9–3.11, CUDA 11.8 or 12.x
+
+# Core deep learning
+torch==2.1.2
+torchvision==0.16.2
+
+# Numerical / image processing
+numpy==1.26.4
+scipy==1.12.0
+scikit-image==0.22.0
+opencv-python==4.9.0.80
+Pillow==10.2.0
+tifffile==2024.2.12
+
+# Medical imaging
+monai==1.3.0
+
+# WSI reading (optional but included)
+openslide-python==4.0.0
+
+# Evaluation
+pytorch-fid==0.3.0
+
+# Experiment tracking
+tensorboard==2.16.2
+wandb==0.16.4
+
+# Utilities
+tqdm==4.66.2
+pyyaml==6.0.1
+
+# Code quality
+black==24.2.0
+isort==5.13.2
+
+# Optional: advanced augmentation
+albumentations==1.3.1
+
+# Optional: pretrained encoders
+timm==0.9.16

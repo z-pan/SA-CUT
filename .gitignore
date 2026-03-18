@@ -1,0 +1,77 @@
+# SA-CUT .gitignore
+
+# Model checkpoints and experiment outputs
+checkpoints/
+results/
+
+# Raw and processed dataset files
+data/raw/
+data/processed/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Experiment tracking
+wandb/
+runs/
+
+# Logs
+*.log
+logs/
+
+# Compiled extensions
+*.so
+*.dylib
+*.dll
+
+# Temporary files
+*.tmp
+*.bak
+tmp/
+
+# Large binary / data files
+*.tif
+*.tiff
+*.svs
+*.ndpi
+*.h5
+*.hdf5
+*.pt
+*.pth
+*.onnx
+
+# Secrets / credentials
+.env
+*.key
