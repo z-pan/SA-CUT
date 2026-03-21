@@ -23,8 +23,13 @@ from typing import Callable, Optional
 
 import numpy as np
 import torch
+from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
+
+# Supported patch file formats for TPAF and H&E directories.
+# Masks are always .npy (output of scripts/precompute_masks.py).
+_PATCH_EXTENSIONS: tuple[str, ...] = (".npy", ".png", ".tif", ".tiff")
 
 logger = logging.getLogger(__name__)
 
@@ -90,13 +95,16 @@ class UnpairedTPAFDataset(Dataset):
     ``ColorJitter``) always receives values in the expected ``[0, 1]`` range.
 
     Args:
-        tpaf_dir:   Directory containing TPAF ``.npy`` patches (recursive search).
-        he_dir:     Directory containing H&E  ``.npy`` patches (recursive search).
-        mask_dir:   Optional directory of pre-computed nuclear masks.  Matched to
-                    TPAF patches by **filename** (not full path), so masks may live
-                    in a flat directory or mirror the TPAF subdirectory structure.
-                    When ``None``, a zero mask of shape ``(1, H, W)`` is returned
-                    and the trainer should call AFN-DeSeg on-the-fly.
+        tpaf_dir:   Directory containing TPAF patches (recursive search).
+                    Supported formats: ``.npy``, ``.png``, ``.tif``, ``.tiff``.
+        he_dir:     Directory containing H&E patches (recursive search).
+                    Supported formats: ``.npy``, ``.png``, ``.tif``, ``.tiff``.
+        mask_dir:   Optional directory of pre-computed nuclear masks (``.npy``
+                    only, produced by ``scripts/precompute_masks.py``).  Matched
+                    to TPAF patches by **filename stem** (no extension), so a TPAF
+                    file ``foo.png`` matches mask ``foo.npy``.  When ``None``, a
+                    zero mask of shape ``(1, H, W)`` is returned and the trainer
+                    calls the Cellpose-SAM model on-the-fly.
         patch_size: Expected spatial size used for shape validation.  Pass ``None``
                     to skip (e.g. if using variable-size patches).
         transform:  Optional callable ``(dict) -> dict`` applied to the sample
@@ -106,7 +114,7 @@ class UnpairedTPAFDataset(Dataset):
     Raises:
         FileNotFoundError: If *tpaf_dir* or *he_dir* (or *mask_dir*, if given)
             does not exist.
-        RuntimeError: If either domain directory contains no ``.npy`` files.
+        RuntimeError: If either domain directory contains no supported patch files.
     """
 
     def __init__(
@@ -125,26 +133,26 @@ class UnpairedTPAFDataset(Dataset):
         self.patch_size = patch_size
         self.transform = transform
 
-        self.tpaf_files: list[Path] = _find_npy(self.tpaf_dir, label="TPAF")
-        self.he_files: list[Path] = _find_npy(self.he_dir, label="H&E")
+        self.tpaf_files: list[Path] = _find_patches(self.tpaf_dir, label="TPAF")
+        self.he_files: list[Path] = _find_patches(self.he_dir, label="H&E")
 
-        # Build O(1) mask lookup keyed by basename.  If two WSI stems share a
-        # patch filename (shouldn't happen with the extractor naming convention)
-        # the last one wins; a debug log will flag it.
+        # Build O(1) mask lookup keyed by file stem (no extension).
+        # This allows TPAF files in any format (e.g. foo.png) to match their
+        # corresponding mask (foo.npy) produced by scripts/precompute_masks.py.
         self._mask_index: dict[str, Path] = {}
         if self.mask_dir is not None:
             if not self.mask_dir.exists():
                 raise FileNotFoundError(f"mask_dir not found: {self.mask_dir}")
             for p in self.mask_dir.glob("**/*.npy"):
-                if p.name in self._mask_index:
+                if p.stem in self._mask_index:
                     logger.debug(
-                        "Mask filename collision: '%s' — keeping %s, ignoring %s.",
-                        p.name,
-                        self._mask_index[p.name],
+                        "Mask stem collision: '%s' — keeping %s, ignoring %s.",
+                        p.stem,
+                        self._mask_index[p.stem],
                         p,
                     )
                 else:
-                    self._mask_index[p.name] = p
+                    self._mask_index[p.stem] = p
 
         logger.info(
             "%s: %d TPAF | %d H&E | %d masks | len=%d",
@@ -226,35 +234,58 @@ class UnpairedTPAFDataset(Dataset):
     # ------------------------------------------------------------------
 
     def _load_tpaf(self, path: Path) -> Tensor:
-        """Load a TPAF ``.npy`` patch as a ``(1, H, W)`` float32 tensor in ``[0, 1]``.
+        """Load a TPAF patch as a ``(1, H, W)`` float32 tensor in ``[0, 1]``.
 
-        Patches are produced by :class:`data.patch_extractor.PatchExtractor` and
-        are already percentile-normalised.  A defensive clamp fires with a warning
-        if values are found outside ``[0, 1]`` (e.g. from a custom upstream pipeline).
+        Supported formats:
+
+        * ``.npy`` — expected to be already float32 in ``[0, 1]`` (percentile-
+          normalised by :class:`data.patch_extractor.PatchExtractor`).
+        * ``.png`` — loaded as uint8 grayscale; percentile-clipped [1%, 99%] and
+          rescaled to ``[0, 1]`` (per CLAUDE.md: never use min-max normalisation).
+        * ``.tif`` / ``.tiff`` — loaded via ``tifffile`` (16-bit safe); same
+          percentile normalisation as PNG.
 
         For multi-channel TPAF (NADH + FAD, shape ``(H, W, 2)``), the array is
         transposed to ``(2, H, W)`` and returned as a 2-channel tensor.  The
         generator config must set ``input_nc=3`` (NADH + FAD + mask) in that case.
 
         Args:
-            path: Path to a ``.npy`` TPAF patch file.
+            path: Path to a TPAF patch file.
 
         Returns:
             Float32 tensor, shape ``(C, H, W)`` where C is 1 or 2.
 
         Raises:
-            RuntimeError: If the loaded array has an unexpected shape.
+            RuntimeError: If the loaded array has an unexpected shape or format.
         """
-        array = np.load(path)
+        suffix = path.suffix.lower()
 
-        if array.dtype != np.float32:
-            logger.warning(
-                "TPAF patch '%s' has dtype %s (expected float32). "
-                "Was percentile normalization applied by the patch extractor? Casting.",
-                path.name,
-                array.dtype,
+        if suffix == ".npy":
+            array = np.load(path)
+            if array.dtype != np.float32:
+                logger.warning(
+                    "TPAF patch '%s' has dtype %s (expected float32). "
+                    "Was percentile normalization applied by the patch extractor? Casting.",
+                    path.name,
+                    array.dtype,
+                )
+                array = array.astype(np.float32)
+        elif suffix == ".png":
+            raw = np.array(Image.open(path).convert("L"), dtype=np.float32)
+            lo, hi = np.percentile(raw, [1.0, 99.0])
+            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+        elif suffix in (".tif", ".tiff"):
+            import tifffile  # optional dependency; only imported when needed
+            raw = tifffile.imread(str(path)).astype(np.float32)
+            if raw.ndim == 3 and raw.shape[-1] in (1, 2):
+                raw = raw[..., 0] if raw.shape[-1] == 1 else raw  # keep (H,W,2) intact
+            lo, hi = np.percentile(raw, [1.0, 99.0])
+            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+        else:
+            raise RuntimeError(
+                f"Unsupported TPAF format '{path.suffix}' for '{path}'. "
+                f"Supported: {_PATCH_EXTENSIONS}"
             )
-            array = array.astype(np.float32)
 
         # Shape normalisation → (C, H, W)
         if array.ndim == 2:
@@ -289,29 +320,49 @@ class UnpairedTPAFDataset(Dataset):
         return tensor
 
     def _load_he(self, path: Path) -> Tensor:
-        """Load an H&E ``.npy`` patch as a ``(3, H, W)`` float32 tensor in ``[0, 1]``.
+        """Load an H&E patch as a ``(3, H, W)`` float32 tensor in ``[0, 1]``.
+
+        Supported formats:
+
+        * ``.npy`` — expected to be already float32 in ``[0, 1]``.
+        * ``.png`` — loaded as uint8 RGB; divided by 255.
+        * ``.tif`` / ``.tiff`` — loaded via ``tifffile``; divided by 255 if
+          values exceed 1.0 (assumes 8-bit H&E TIFF).
 
         Scaling to ``[-1, 1]`` is performed by :meth:`__getitem__` **after** the
         transform, not here.
 
         Args:
-            path: Path to a ``.npy`` H&E patch file.
+            path: Path to an H&E patch file.
 
         Returns:
             Float32 tensor of shape ``(3, H, W)`` in ``[0, 1]``.
 
         Raises:
-            RuntimeError: If the loaded array is not 3-channel.
+            RuntimeError: If the loaded array is not 3-channel or format unsupported.
         """
-        array = np.load(path)
+        suffix = path.suffix.lower()
 
-        if array.dtype != np.float32:
-            logger.warning(
-                "H&E patch '%s' has dtype %s (expected float32). Casting.",
-                path.name,
-                array.dtype,
+        if suffix == ".npy":
+            array = np.load(path)
+            if array.dtype != np.float32:
+                logger.warning(
+                    "H&E patch '%s' has dtype %s (expected float32). Casting.",
+                    path.name,
+                    array.dtype,
+                )
+                array = array.astype(np.float32)
+        elif suffix == ".png":
+            array = np.array(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
+        elif suffix in (".tif", ".tiff"):
+            import tifffile  # optional dependency; only imported when needed
+            raw = tifffile.imread(str(path)).astype(np.float32)
+            array = raw / 255.0 if raw.max() > 1.0 else raw
+        else:
+            raise RuntimeError(
+                f"Unsupported H&E format '{path.suffix}' for '{path}'. "
+                f"Supported: {_PATCH_EXTENSIONS}"
             )
-            array = array.astype(np.float32)
 
         # Shape normalisation → (3, H, W)
         if array.ndim == 3 and array.shape[-1] == 3:
@@ -361,12 +412,12 @@ class UnpairedTPAFDataset(Dataset):
         if self.mask_dir is None:
             return torch.zeros(1, height, width, dtype=torch.float32)
 
-        mask_path = self._mask_index.get(tpaf_path.name)
+        mask_path = self._mask_index.get(tpaf_path.stem)
         if mask_path is None:
             logger.warning(
-                "No pre-computed mask found for '%s' in mask_dir '%s'. "
-                "Returning zero mask; AFN-DeSeg will compute it on-the-fly.",
-                tpaf_path.name,
+                "No pre-computed mask found for stem '%s' in mask_dir '%s'. "
+                "Returning zero mask; Cellpose-SAM will compute it on-the-fly.",
+                tpaf_path.stem,
                 self.mask_dir,
             )
             return torch.zeros(1, height, width, dtype=torch.float32)
@@ -414,27 +465,40 @@ class UnpairedTPAFDataset(Dataset):
 # ---------------------------------------------------------------------------
 
 
-def _find_npy(directory: Path, label: str) -> list[Path]:
-    """Recursively discover and sort ``.npy`` files under *directory*.
+def _find_patches(directory: Path, label: str) -> list[Path]:
+    """Recursively discover and sort patch files under *directory*.
+
+    Searches for all formats in :data:`_PATCH_EXTENSIONS` (``.npy``, ``.png``,
+    ``.tif``, ``.tiff``).  Files are de-duplicated by stem when the same name
+    appears in multiple formats (e.g. ``foo.npy`` and ``foo.png``): the format
+    with the highest priority in ``_PATCH_EXTENSIONS`` wins.
 
     Args:
         directory: Root directory to search.
         label:     Human-readable domain name for error messages.
 
     Returns:
-        Sorted list of ``.npy`` file paths.
+        Sorted list of patch file paths.
 
     Raises:
         FileNotFoundError: If *directory* does not exist.
-        RuntimeError:      If no ``.npy`` files are found.
+        RuntimeError:      If no supported patch files are found.
     """
     if not directory.exists():
         raise FileNotFoundError(f"{label} directory not found: {directory}")
 
-    files = sorted(directory.glob("**/*.npy"))
+    # Collect all supported files; de-duplicate by stem (first extension wins
+    # per _PATCH_EXTENSIONS priority order).
+    seen: dict[str, Path] = {}
+    for ext in _PATCH_EXTENSIONS:
+        for p in directory.glob(f"**/*{ext}"):
+            if p.stem not in seen:
+                seen[p.stem] = p
+
+    files = sorted(seen.values(), key=lambda p: (p.parent, p.name))
     if not files:
         raise RuntimeError(
-            f"No .npy patch files found in {label} directory: {directory}\n"
-            "Run scripts/extract_patches.py first to generate patches."
+            f"No patch files found in {label} directory: {directory}\n"
+            f"Supported formats: {_PATCH_EXTENSIONS}"
         )
     return files
