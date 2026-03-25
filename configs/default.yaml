@@ -44,7 +44,7 @@ mask_provider:
   #   nuclei  → classic Cellpose nucleus model
   cellpose_model_type: cpsam
   cellpose_diameter: 78            # scaled from 30 (unscaled) × 127.44/48.81 = 78 (SA-CUT patches)
-  cellpose_flow_threshold: 0.4
+  cellpose_flow_threshold: 0.85
   cellpose_cellprob_threshold: 0.0
   cellpose_gpu: true
   output_type: binary              # binary | soft (probability map)
