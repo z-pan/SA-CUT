@@ -243,7 +243,7 @@ def _save_qc_montage(
 def run_precompute(
     input_dir: Path,
     output_dir: Path,
-    checkpoint: Path,
+    checkpoint: Optional[Path],
     model_type: str,
     diameter: Optional[int],
     gpu: bool,
@@ -256,8 +256,10 @@ def run_precompute(
     Args:
         input_dir: Directory of TPAF patch files.
         output_dir: Directory to write ``.npy`` masks and QC files.
-        checkpoint: Path to the Cellpose-SAM checkpoint.
-        model_type: Cellpose model type string.
+        checkpoint: Path to the Cellpose-SAM checkpoint (``.pth`` fine-tuned on
+            TPAF).  Pass ``None`` to use the Cellpose built-in weights specified
+            by *model_type* (e.g. ``"cyto3"``).
+        model_type: Cellpose model type string (e.g. ``"cyto3"``, ``"nuclei"``).
         diameter: Nucleus diameter in pixels (``None`` = auto-estimate).
         gpu: Use CUDA.
         flow_threshold: Cellpose flow threshold.
@@ -287,12 +289,19 @@ def run_precompute(
             "Install it with: pip install cellpose"
         ) from exc
 
-    logger.info("Loading Cellpose-SAM from %s", checkpoint)
-    model = _cellpose_models.CellposeModel(
-        pretrained_model=str(checkpoint),
-        model_type=model_type,
-        gpu=gpu,
-    )
+    if checkpoint is not None:
+        logger.info("Loading Cellpose-SAM from %s (model_type=%s)", checkpoint, model_type)
+        model = _cellpose_models.CellposeModel(
+            pretrained_model=str(checkpoint),
+            model_type=model_type,
+            gpu=gpu,
+        )
+    else:
+        logger.info("No checkpoint provided — using built-in Cellpose weights (model_type=%s)", model_type)
+        model = _cellpose_models.CellposeModel(
+            model_type=model_type,
+            gpu=gpu,
+        )
     # Freeze (this script never trains the model)
     net = getattr(model, "net", None)
     if net is not None:
@@ -396,9 +405,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        required=True,
+        default=None,
         metavar="PTH",
-        help="Path to the Cellpose-SAM checkpoint (.pth) fine-tuned on TPAF.",
+        help=(
+            "Path to the Cellpose-SAM checkpoint (.pth) fine-tuned on TPAF. "
+            "Omit to use the Cellpose built-in weights for --model_type."
+        ),
     )
     parser.add_argument(
         "--model_type",
@@ -460,7 +472,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         logger.error("--input_dir does not exist: %s", args.input_dir)
         sys.exit(1)
 
-    if not args.checkpoint.exists():
+    if args.checkpoint is not None and not args.checkpoint.exists():
         logger.error("--checkpoint does not exist: %s", args.checkpoint)
         sys.exit(1)
 
