@@ -214,7 +214,11 @@ class CellposeSAMMaskProvider(MaskProvider):
     Args:
         checkpoint_path: Path to the Cellpose-SAM checkpoint (a ``.pth``
             file fine-tuned on TPAF data).
-        model_type: Cellpose model type string (e.g. ``"cyto3"``).
+        model_type: Cellpose model type string.  Must match the checkpoint
+            architecture: ``"cpsam"`` for Cellpose-SAM fine-tuned models
+            (filenames start with ``cpsam_*``); ``"cyto3"`` / ``"nuclei"``
+            for classic Cellpose U-Net models.  Mixing architectures causes
+            a weight shape-mismatch error at load time.
         diameter: Expected nucleus diameter in pixels.  Pass ``None`` to
             auto-estimate per image (slower).
         gpu: Use CUDA if available.
@@ -225,7 +229,7 @@ class CellposeSAMMaskProvider(MaskProvider):
     def __init__(
         self,
         checkpoint_path: str,
-        model_type: str = "cyto3",
+        model_type: str = "cpsam",
         diameter: Optional[int] = 30,
         gpu: bool = True,
         flow_threshold: float = 0.4,
