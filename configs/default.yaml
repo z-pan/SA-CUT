@@ -35,10 +35,14 @@ data:
 # mode: cellpose     → run Cellpose-SAM at training time (slower, no pre-save step)
 # ------------------------------------------------------------
 mask_provider:
-  mode: precomputed                # precomputed | cellpose
+  mode: precomputed                # precomputed | cellpose_sam
   mask_dir: data/patches/masks     # used when mode=precomputed
-  cellpose_checkpoint: checkpoints/cellpose_sam_tpaf.pth  # used when mode=cellpose
-  cellpose_model_type: cyto3
+  cellpose_checkpoint: checkpoints/cellpose_sam_tpaf.pth  # used when mode=cellpose_sam
+  # model_type must match the checkpoint architecture:
+  #   cpsam   → Cellpose-SAM (SAM backbone, filenames start with 'cpsam_*')
+  #   cyto3   → classic Cellpose U-Net  (incompatible with cpsam checkpoints)
+  #   nuclei  → classic Cellpose nucleus model
+  cellpose_model_type: cpsam
   cellpose_diameter: 30            # expected nucleus diameter in pixels
   cellpose_flow_threshold: 0.4
   cellpose_cellprob_threshold: 0.0
