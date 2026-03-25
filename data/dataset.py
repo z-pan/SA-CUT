@@ -273,14 +273,17 @@ class UnpairedTPAFDataset(Dataset):
         elif suffix == ".png":
             raw = np.array(Image.open(path).convert("L"), dtype=np.float32)
             lo, hi = np.percentile(raw, [1.0, 99.0])
-            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+            # Cast back to float32: np.percentile returns float64 scalars, and
+            # arithmetic with float64 promotes the result to float64, which
+            # causes dtype mismatch when AMP casts model weights to float16.
+            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0).astype(np.float32)
         elif suffix in (".tif", ".tiff"):
             import tifffile  # optional dependency; only imported when needed
             raw = tifffile.imread(str(path)).astype(np.float32)
             if raw.ndim == 3 and raw.shape[-1] in (1, 2):
                 raw = raw[..., 0] if raw.shape[-1] == 1 else raw  # keep (H,W,2) intact
             lo, hi = np.percentile(raw, [1.0, 99.0])
-            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0)
+            array = np.clip((raw - lo) / (hi - lo + 1e-6), 0.0, 1.0).astype(np.float32)
         else:
             raise RuntimeError(
                 f"Unsupported TPAF format '{path.suffix}' for '{path}'. "

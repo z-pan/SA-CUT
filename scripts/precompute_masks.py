@@ -103,8 +103,10 @@ def _load_tpaf_patch(path: Path) -> np.ndarray:
         raise ValueError(f"Unexpected TPAF array shape {img.shape} in {path}.")
 
     # Percentile clipping — NEVER min-max (see CLAUDE.md pitfall #2)
-    p_low = np.percentile(img, 1.0)
-    p_high = np.percentile(img, 99.0)
+    # Cast percentiles to float32: np.percentile returns float64 scalars, and
+    # arithmetic with float64 would promote the result array to float64.
+    p_low = np.float32(np.percentile(img, 1.0))
+    p_high = np.float32(np.percentile(img, 99.0))
     if p_high <= p_low:
         return np.zeros_like(img)
     img = np.clip(img, p_low, p_high)
