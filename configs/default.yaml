@@ -19,7 +19,7 @@ experiment:
 data:
   tpaf_dir: data/raw/tpaf          # directory of TPAF patches / WSI files
   he_dir: data/raw/he              # directory of H&E patches / WSI files
-  patch_size: 256
+  patch_size: 512
   tpaf_channels: 1                 # 1 (grayscale) or 2 (NADH + FAD)
   # TPAF normalization: percentile clipping [p_low, p_high] then scale to [0, 1]
   tpaf_norm_percentile_low: 1.0
