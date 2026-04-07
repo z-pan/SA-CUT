@@ -520,12 +520,12 @@ class SACUTTrainer:
     # ------------------------------------------------------------------
 
     def update_D(self, real_he: Tensor, fake_he: Tensor) -> Dict[str, float]:
-        """Discriminator gradient step.
+        """Discriminator gradient step with optional R1 gradient penalty.
 
-        Standard LSGAN training:
+        Training:
           1. Real loss:  ``0.5 * L_adv(D(real), True)``
           2. Fake loss:  ``0.5 * L_adv(D(fake.detach()), False)``
-          3. Total:      mean of the two.
+          3. R1 penalty: ``lambda_r1 * 0.5 * E[||∇_x D(x)||^2]`` (if enabled)
 
         ``fake_he`` **must** be detached by the caller to prevent G from
         receiving gradients through this step.
@@ -535,7 +535,8 @@ class SACUTTrainer:
             fake_he: Detached generated H&E, same shape.
 
         Returns:
-            Dict with keys ``'loss_D'``, ``'loss_D_real'``, ``'loss_D_fake'``.
+            Dict with keys ``'loss_D'``, ``'loss_D_real'``, ``'loss_D_fake'``,
+            ``'loss_D_r1'``.
         """
         _set_requires_grad(self.D, True)
         self.optimizer_D.zero_grad()
@@ -543,14 +544,26 @@ class SACUTTrainer:
         with self._amp_ctx():
             loss_D_real = self.criterion_gan(self.D(real_he), target_is_real=True)
             loss_D_fake = self.criterion_gan(self.D(fake_he), target_is_real=False)
-            loss_D = (loss_D_real + loss_D_fake) * 0.5
+            loss_D_gan = (loss_D_real + loss_D_fake) * 0.5
+
+        # R1 penalty is computed OUTSIDE _amp_ctx so that autograd.grad runs in
+        # float32.  create_graph=True is required so backward() can differentiate
+        # through the penalty into D's parameters.
+        lambda_r1: float = getattr(self.cfg.losses, "lambda_r1", 0.0)
+        if lambda_r1 > 0.0:
+            loss_D_r1 = self._compute_r1_penalty(real_he) * lambda_r1
+            loss_D = loss_D_gan + loss_D_r1
+        else:
+            loss_D_r1 = torch.zeros((), device=real_he.device)
+            loss_D = loss_D_gan
 
         self._backward(loss_D, self.optimizer_D, list(self.D.parameters()))
 
         return {
-            "loss_D": loss_D.item(),
+            "loss_D":      loss_D.item(),
             "loss_D_real": loss_D_real.item(),
             "loss_D_fake": loss_D_fake.item(),
+            "loss_D_r1":   loss_D_r1.item(),
         }
 
     # ------------------------------------------------------------------
@@ -693,6 +706,29 @@ class SACUTTrainer:
             if self.grad_clip > 0 and params:
                 nn.utils.clip_grad_norm_(params, self.grad_clip)
             optimizer.step()
+
+    def _compute_r1_penalty(self, real_he: Tensor) -> Tensor:
+        """R1 gradient penalty: ``0.5 * E[||∇_x D(x)||^2]`` on real images.
+
+        Prevents discriminator overconfidence by penalising large gradients
+        w.r.t. real inputs.  Must be called **outside** any AMP autocast
+        context so that ``torch.autograd.grad`` operates in float32.
+
+        Args:
+            real_he: Real H&E batch ``(B, 3, H, W)`` in ``[-1, 1]``.
+
+        Returns:
+            Scalar penalty tensor attached to D's computation graph.
+        """
+        x = real_he.detach().float().requires_grad_(True)
+        with torch.enable_grad():
+            d_out = self.D(x)
+            grads = torch.autograd.grad(
+                outputs=d_out.sum(),
+                inputs=x,
+                create_graph=True,
+            )[0]
+        return 0.5 * grads.pow(2).reshape(grads.shape[0], -1).sum(1).mean()
 
     # ------------------------------------------------------------------
     # Checkpointing

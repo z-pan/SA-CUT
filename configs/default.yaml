@@ -95,6 +95,10 @@ losses:
   struct_warmup_epochs: 10
   # Linear ramp-up of lambda_struct over N epochs after warm-up ends
   struct_rampup_epochs: 5
+  # R1 gradient penalty on D: 0.5 * E[||∇_x D(x)||^2] weighted by lambda_r1.
+  # Prevents discriminator overconfidence (loss_D collapsing to ~0).
+  # Set to 1.0 to enable; 0.0 disables the penalty (backwards-compatible default).
+  lambda_r1: 0.0
 
 # ------------------------------------------------------------
 # Training
@@ -102,7 +106,7 @@ losses:
 training:
   batch_size: 1
   lr_G: 2.0e-4
-  lr_D: 2.0e-4
+  lr_D: 1.0e-4                       # half of lr_G — slows D to prevent collapse
   beta1: 0.5
   beta2: 0.999
   n_epochs: 200                    # epochs at full LR (Phase 1+2)
