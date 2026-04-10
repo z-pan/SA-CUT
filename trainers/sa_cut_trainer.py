@@ -255,6 +255,7 @@ class SACUTTrainer:
         self.criterion_struct = StructureConsistencyLoss(
             mode=cfg.losses.struct_loss_mode,
             threshold=getattr(cfg.losses, "struct_threshold_hematoxylin", 0.15),
+            sharpness=getattr(cfg.losses, "struct_sharpness", 15.0),
             warmup_epochs=cfg.losses.struct_warmup_epochs,
             ramp_epochs=cfg.losses.struct_rampup_epochs,
         ).to(self.device)
@@ -643,15 +644,19 @@ class SACUTTrainer:
             )
 
             # ── 4. Identity (optional) ────────────────────────────────────
-            # Input:  [real H&E grayscale, all-ones mask]
+            # Input:  [real H&E grayscale, extracted nuclear mask]
             # Output: should reproduce real H&E
             # Regularises the generator's colour mapping without requiring
-            # paired TPAF↔H&E data.
+            # paired TPAF↔H&E data.  The nuclear mask is extracted from
+            # real H&E via Macenko HED decomposition (same pipeline as
+            # L_struct) so that the mask-colour association is consistent:
+            # mask=1 regions correspond to actual hematoxylin in the target.
             loss_idt = torch.zeros((), device=self.device)
             if self.cfg.losses.lambda_idt > 0.0:
                 real_gray = _rgb_to_gray(real_he)                      # (B, 1, H, W)
-                ones_mask = torch.ones_like(real_gray)                 # (B, 1, H, W)
-                idt_input = torch.cat([real_gray, ones_mask], dim=1)   # (B, 2, H, W)
+                with torch.no_grad():
+                    real_hem_mask = self.criterion_struct.extract_hem_mask(real_he)
+                idt_input = torch.cat([real_gray, real_hem_mask], dim=1)  # (B, 2, H, W)
                 idt_out = self.G(idt_input)                            # (B, 3, H, W)
                 loss_idt = F.l1_loss(idt_out, real_he) * self.cfg.losses.lambda_idt
 
