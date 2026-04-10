@@ -713,11 +713,16 @@ class SACUTTrainer:
             optimizer.step()
 
     def _compute_r1_penalty(self, real_he: Tensor) -> Tensor:
-        """R1 gradient penalty: ``0.5 * E[||∇_x D(x)||^2]`` on real images.
+        """R1 gradient penalty: ``0.5 * E[mean(||∇_x D(x)||^2)]`` on real images.
 
         Prevents discriminator overconfidence by penalising large gradients
         w.r.t. real inputs.  Must be called **outside** any AMP autocast
         context so that ``torch.autograd.grad`` operates in float32.
+
+        Uses **mean** (not sum) over spatial and channel dimensions so that
+        the penalty magnitude is independent of input resolution.  Without
+        this, 512×512 inputs produce 4× the penalty of 256×256 for identical
+        gradient magnitudes, making ``lambda_r1`` resolution-dependent.
 
         Args:
             real_he: Real H&E batch ``(B, 3, H, W)`` in ``[-1, 1]``.
@@ -733,7 +738,7 @@ class SACUTTrainer:
                 inputs=x,
                 create_graph=True,
             )[0]
-        return 0.5 * grads.pow(2).reshape(grads.shape[0], -1).sum(1).mean()
+        return 0.5 * grads.pow(2).mean()
 
     # ------------------------------------------------------------------
     # Checkpointing

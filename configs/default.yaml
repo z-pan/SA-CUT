@@ -96,10 +96,10 @@ losses:
   struct_warmup_epochs: 10
   # Linear ramp-up of lambda_struct over N epochs after warm-up ends
   struct_rampup_epochs: 5
-  # R1 gradient penalty on D: 0.5 * E[||∇_x D(x)||^2] weighted by lambda_r1.
+  # R1 gradient penalty on D: 0.5 * E[mean(||∇_x D(x)||^2)] weighted by lambda_r1.
+  # Uses mean (not sum) over spatial dims — resolution-independent.
   # Prevents discriminator overconfidence (loss_D collapsing to ~0).
-  # Set to 1.0 to enable; 0.0 disables the penalty (backwards-compatible default).
-  lambda_r1: 5.0
+  lambda_r1: 10.0
 
 # ------------------------------------------------------------
 # Training

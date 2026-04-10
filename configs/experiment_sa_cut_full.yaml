@@ -118,7 +118,7 @@ losses:
   struct_sharpness: 20.0             # sigmoid steepness for soft-thresholding H channel
   struct_warmup_epochs: 10           # Phase 1: L_struct disabled for first 10 epochs
   struct_rampup_epochs: 5            # Phase 2: L_struct weight ramps 0→5.0 over 5 epochs
-  lambda_r1: 5.0                     # R1 gradient penalty to prevent D dominance
+  lambda_r1: 10.0                    # R1 gradient penalty (mean-normalised, resolution-independent)
 
 # ------------------------------------------------------------
 # Training
