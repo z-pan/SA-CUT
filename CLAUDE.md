@@ -17,15 +17,19 @@
 ## Architecture Summary
 
 ```
-TPAF image ──┬──→ [AFN-DeSeg (frozen)] → Nuclear Mask ──┐
-             │                                            ├→ Concat → Generator G → Virtual H&E
-             └────────────────────────────────────────────┘
-                                                                    ↓
-                                              ┌─── L_adv (PatchGAN Discriminator)
-                                              ├─── L_SA-PatchNCE (Region-Aware Contrastive)
-                              L_total ←───────┤
-                                              ├─── L_struct (Mask Consistency)
-                                              └─── L_idt (Identity, optional)
+                         ┌─ Option A: Load precomputed mask files (preferred for training speed)
+Nuclear Mask ←───────────┤
+                         └─ Option B: Cellpose-SAM (frozen, on-the-fly inference)
+
+TPAF image ──┬───────────────── Nuclear Mask ──┐
+             │                                  ├→ Concat → Generator G → Virtual H&E
+             └──────────────────────────────────┘
+                                                                ↓
+                                          ┌─── L_adv (PatchGAN Discriminator)
+                                          ├─── L_SA-PatchNCE (Region-Aware Contrastive)
+                          L_total ←───────┤
+                                          ├─── L_struct (Mask Consistency)
+                                          └─── L_idt (Identity, optional)
 ```
 
 ### Module Breakdown
@@ -36,7 +40,7 @@ TPAF image ──┬──→ [AFN-DeSeg (frozen)] → Nuclear Mask ──┐
 | **Discriminator D** | PatchGAN (NLayerDiscriminator, n_layers=3) | `models/discriminator.py` |
 | **SA-PatchNCE** | Region-aware contrastive loss, mask-partitioned patch sampling | `losses/sa_patchnce.py` |
 | **L_struct** | Structure consistency via color-space thresholding or pretrained detector | `losses/structure_loss.py` |
-| **AFN-DeSeg** | Frozen pretrained nuclear segmentation, provides mask | `models/afn_deseg.py` (wrapper only) |
+| **Mask Provider** | Precomputed masks (file-based) or Cellpose-SAM (frozen, on-the-fly) | `models/mask_provider.py` |
 | **Data Pipeline** | Unpaired TPAF/H&E patch loading from WSI | `data/` |
 
 ---
@@ -59,6 +63,7 @@ opencv-python (cv2)
 Pillow
 tifffile              # for reading TPAF .tif WSI
 openslide-python      # for reading H&E .svs/.ndpi WSI (optional)
+cellpose              # nuclear segmentation (Cellpose-SAM, finetuned on TPAF)
 monai                 # medical image transforms, Dice loss
 pytorch-fid           # FID evaluation
 tensorboard or wandb  # experiment tracking
@@ -96,7 +101,7 @@ SA-CUT/
 │   ├── generator.py           # ResNetGenerator (mask-conditioned)
 │   ├── discriminator.py       # NLayerDiscriminator (PatchGAN)
 │   ├── networks.py            # weight init, normalization helpers
-│   └── afn_deseg.py           # frozen segmentation model wrapper
+│   └── mask_provider.py        # mask loading (files) or on-the-fly segmentation (Cellpose-SAM)
 ├── losses/
 │   ├── __init__.py
 │   ├── gan_loss.py            # LSGAN / vanilla GAN loss
@@ -181,10 +186,13 @@ If the generated H&E shows bright TPAF regions as purple, or dark voids as white
 
 ### 2. Mask Quality Dependency
 
-The entire pipeline depends on AFN-DeSeg's segmentation quality. Code must:
+The entire pipeline depends on the nuclear mask quality, whether from precomputed files or Cellpose-SAM. Code must:
 - Log mask quality metrics (estimated coverage ratio, connected component stats) during training.
 - Support uncertainty-weighted masks (soft probability maps, not just binary).
-- Never modify or fine-tune the frozen segmentation model during SA-CUT training.
+- Never modify or fine-tune the frozen Cellpose-SAM model during SA-CUT training.
+- The mask provider operates in one of two modes (configured via `mask_provider.mode`):
+  - `precomputed`: load masks from disk (default, fastest). Mask files must exist for every TPAF patch, matched by filename.
+  - `cellpose_sam`: run Cellpose-SAM inference on-the-fly (slower, useful for test-time on new data). The model checkpoint is frozen.
 
 ### 3. Unpaired Data Assumptions
 
@@ -208,6 +216,21 @@ The entire pipeline depends on AFN-DeSeg's segmentation quality. Code must:
 ## Hyperparameter Reference
 
 ```yaml
+# Mask Provider
+mask_provider:
+  mode: precomputed        # Options: precomputed | cellpose_sam
+  # --- precomputed mode ---
+  mask_dir: data/patches/masks   # directory of .npy mask files, matched to TPAF by filename
+  # --- cellpose_sam mode ---
+  cellpose_checkpoint: checkpoints/cellpose_sam_tpaf.pth  # finetuned on TPAF data
+  cellpose_model_type: cyto3     # cellpose model type (cyto, cyto2, cyto3, nuclei)
+  cellpose_diameter: 30          # estimated nucleus diameter in pixels (null for auto)
+  cellpose_flow_threshold: 0.4
+  cellpose_cellprob_threshold: 0.0
+  cellpose_gpu: true
+  output_type: binary            # binary | soft (probability map)
+  binarize_threshold: 0.5        # only used when output_type=binary
+
 # Generator
 generator:
   input_nc: 2           # TPAF (1ch) + Mask (1ch); or 3 if NADH+FAD+Mask
@@ -295,12 +318,12 @@ Do **not** compute PSNR/SSIM between generated H&E and real H&E — there is no 
 
 1. **Never use pixel-wise loss (L1/MSE) between TPAF source and H&E target.** This is unpaired translation.
 2. **Never normalize TPAF with min-max.** Use percentile clipping.
-3. **Never train or fine-tune AFN-DeSeg during SA-CUT training.** It must be frozen.
+3. **Never train or fine-tune Cellpose-SAM during SA-CUT training.** It must be frozen.
 4. **Never use batch normalization in the generator for batch_size=1.** Use instance normalization.
 5. **Always detach generator output when updating discriminator.** Standard GAN practice.
 6. **Always verify mask dtype.** Mask should be `float32` in [0, 1], not `uint8` or `bool`. Binary hard masks use 0.0/1.0; soft masks use probability values.
 7. **Structure loss warm-up is mandatory.** Enabling L_struct from epoch 0 produces garbage gradients because the generator output doesn't resemble H&E yet.
-8. **Test-time: mask must come from the same AFN-DeSeg checkpoint used during training.** Different segmentation models produce different mask distributions.
+8. **Test-time: masks must come from the same segmentation source used during training.** If training used precomputed Cellpose-SAM masks, inference must also use Cellpose-SAM (same checkpoint) or masks precomputed by it. Switching segmentors between train and test changes the mask distribution and degrades results.
 9. **TPAF 16-bit images must be loaded with `tifffile`, not PIL/OpenCV.** PIL silently clips to 8-bit.
 
 ---
