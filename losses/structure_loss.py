@@ -150,10 +150,25 @@ class StructureConsistencyLoss(nn.Module):
     extracted from the generated H&E image.
 
     Args:
-        mode: ``'threshold'`` (fully differentiable, default) or
-            ``'pretrained_detector'`` (not yet implemented).
-        threshold: H-channel value above which a pixel is considered nuclear.
-            Typical range ``[0.05, 0.30]``.  Default ``0.15``.
+        mode: Extraction strategy for the nuclear mask from generated H&E.
+
+            ``'luminance'``
+                Nuclei are the darkest structures in H&E regardless of exact
+                hue.  Convert to grayscale, invert, sigmoid-threshold, then
+                soft Dice against the input mask.  Works from epoch 0 (no
+                chicken-and-egg dependency on correct colour).
+
+            ``'threshold'``
+                Differentiable HED colour deconvolution followed by sigmoid
+                on the H (hematoxylin) channel.  Requires the generated image
+                to already roughly resemble H&E for meaningful gradients.
+
+            ``'pretrained_detector'``
+                Not yet implemented.
+
+        threshold: Value above which a pixel is considered nuclear.
+            For ``'luminance'``: inverted-grayscale threshold, typical 0.5.
+            For ``'threshold'``: H-channel threshold, typical 0.05–0.30.
         sharpness: Steepness of the sigmoid soft-threshold.  Higher values
             approximate a hard threshold.  Default ``15.0``.
         learnable_threshold: If ``True``, ``threshold`` and ``sharpness`` are
@@ -169,8 +184,8 @@ class StructureConsistencyLoss(nn.Module):
 
     def __init__(
         self,
-        mode: str = "threshold",
-        threshold: float = 0.15,
+        mode: str = "luminance",
+        threshold: float = 0.5,
         sharpness: float = 15.0,
         learnable_threshold: bool = False,
         smooth: float = 1.0,
@@ -180,9 +195,10 @@ class StructureConsistencyLoss(nn.Module):
     ) -> None:
         super().__init__()
 
-        if mode not in {"threshold", "pretrained_detector"}:
+        if mode not in {"luminance", "threshold", "pretrained_detector"}:
             raise ValueError(
-                f"Unknown mode '{mode}'. Choose 'threshold' or 'pretrained_detector'."
+                f"Unknown mode '{mode}'. Choose 'luminance', 'threshold', "
+                "or 'pretrained_detector'."
             )
         self.mode = mode
         self.smooth = smooth
@@ -292,6 +308,74 @@ class StructureConsistencyLoss(nn.Module):
         return extracted
 
     # ------------------------------------------------------------------
+    # Luminance extraction
+    # ------------------------------------------------------------------
+
+    def extract_luminance_mask(self, generated_he: Tensor) -> Tensor:
+        """Extract a soft nuclear mask based on image darkness (luminance).
+
+        In H&E staining, nuclei are always the **darkest** structures
+        regardless of exact hue — hematoxylin absorbs more light than eosin.
+        This property holds even when the generated colours are not yet
+        correct (e.g. blue-green instead of purple), making luminance-based
+        extraction robust from epoch 0.
+
+        Pipeline:
+
+        1. ``[-1, 1]`` → ``[0, 1]`` (tanh output range correction).
+        2. RGB → luminance-weighted grayscale.
+        3. Invert: dark regions (nuclei) → high values.
+        4. Sigmoid soft-threshold on inverted grayscale:
+           ``mask = σ((inv_gray − threshold) × sharpness)``
+
+        Args:
+            generated_he: Generated H&E tensor, shape ``(B, 3, H, W)``,
+                values in ``[-1, 1]``.
+
+        Returns:
+            Soft nuclear mask, shape ``(B, 1, H, W)``, values in ``(0, 1)``.
+        """
+        # Step 1: [-1, 1] → [0, 1]
+        rgb_01 = generated_he * 0.5 + 0.5
+
+        # Step 2: luminance-weighted grayscale (ITU-R BT.601)
+        gray = (
+            0.299 * rgb_01[:, 0:1]
+            + 0.587 * rgb_01[:, 1:2]
+            + 0.114 * rgb_01[:, 2:3]
+        )
+
+        # Step 3: invert — dark nuclei become high values
+        inv_gray = 1.0 - gray
+
+        # Step 4: differentiable soft threshold
+        extracted = torch.sigmoid(
+            (inv_gray - self.threshold_val) * self.sharpness_val
+        )
+        return extracted
+
+    # ------------------------------------------------------------------
+    # Mode dispatcher
+    # ------------------------------------------------------------------
+
+    def extract_mask(self, generated_he: Tensor) -> Tensor:
+        """Extract a soft nuclear mask using the configured mode.
+
+        Dispatches to :meth:`extract_luminance_mask` (mode ``'luminance'``)
+        or :meth:`extract_hem_mask` (mode ``'threshold'``).
+
+        Args:
+            generated_he: Generated H&E tensor, shape ``(B, 3, H, W)``,
+                values in ``[-1, 1]``.
+
+        Returns:
+            Soft nuclear mask, shape ``(B, 1, H, W)``, values in ``(0, 1)``.
+        """
+        if self.mode == "luminance":
+            return self.extract_luminance_mask(generated_he)
+        return self.extract_hem_mask(generated_he)
+
+    # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
 
@@ -319,7 +403,7 @@ class StructureConsistencyLoss(nn.Module):
         if weight == 0.0:
             return torch.zeros((), device=generated_he.device, dtype=generated_he.dtype)
 
-        extracted = self.extract_hem_mask(generated_he)
+        extracted = self.extract_mask(generated_he)
 
         # Cache for external logging (e.g. TensorBoard) — detached, no gradient
         self._last_hem_mask = extracted.detach()
