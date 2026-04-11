@@ -97,6 +97,7 @@ discriminator:
   ndf: 64
   n_layers: 3
   norm_type: instance
+  use_spectral_norm: true            # SN on all conv layers; replaces IN for D stability
   init_type: normal
   init_gain: 0.02
 
@@ -108,17 +109,20 @@ losses:
   lambda_patchnce: 1.0
   lambda_struct: 5.0                 # high weight — structure preservation is the
                                      # core SA-CUT contribution (see CLAUDE.md)
-  lambda_idt: 0.2
+  lambda_idt: 0.2                     # identity regulariser; lower to avoid fighting L_struct
   gan_mode: lsgan
   n_patchnce_layers: 5
   n_patches_per_layer: 256
   patchnce_mode: region_aware        # SA-PatchNCE: cross-region negatives enforced
-  struct_loss_mode: threshold        # differentiable HED + sigmoid threshold
+  struct_loss_mode: luminance          # luminance (robust) | threshold (HED-based)
+  # Thresholding for struct_loss_mode: luminance (inverted grayscale, dark=nuclear)
+  struct_threshold_luminance: 0.5    # inverted-gray value above which pixel is nuclear
+  # Thresholding for struct_loss_mode: threshold (HED H-channel)
   struct_threshold_hematoxylin: 0.1
-  struct_sharpness: 20.0             # sigmoid steepness for soft-thresholding H channel
-  struct_warmup_epochs: 10           # Phase 1: L_struct disabled for first 10 epochs
+  struct_sharpness: 20.0             # sigmoid steepness (shared by both modes)
+  struct_warmup_epochs: 3            # luminance mode works early; shorter warm-up suffices
   struct_rampup_epochs: 5            # Phase 2: L_struct weight ramps 0→5.0 over 5 epochs
-  lambda_r1: 10.0                    # R1 gradient penalty (mean-normalised, resolution-independent)
+  lambda_r1: 1.0                     # R1 gradient penalty; secondary to spectral norm
 
 # ------------------------------------------------------------
 # Training

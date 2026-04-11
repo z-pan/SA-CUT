@@ -74,6 +74,7 @@ discriminator:
   ndf: 64
   n_layers: 3
   norm_type: instance
+  use_spectral_norm: true            # SN on all conv layers; replaces IN for D stability
   init_type: normal
   init_gain: 0.02
 
@@ -88,18 +89,19 @@ losses:
   gan_mode: lsgan                  # lsgan | vanilla | wgangp
   n_patchnce_layers: 5             # encoder layers from which to sample NCE patches
   n_patches_per_layer: 256
-  struct_loss_mode: threshold      # threshold | pretrained_detector
-  # Thresholding parameters for struct_loss_mode: threshold
-  struct_threshold_hematoxylin: 0.1  # normalized H channel threshold for nucleus detection
-  struct_sharpness: 20.0             # sigmoid steepness for soft-thresholding H channel
+  struct_loss_mode: luminance        # luminance (robust) | threshold (HED-based)
+  # Thresholding for struct_loss_mode: luminance (inverted grayscale, dark=nuclear)
+  struct_threshold_luminance: 0.5    # inverted-gray value above which pixel is nuclear
+  # Thresholding for struct_loss_mode: threshold (HED H-channel)
+  struct_threshold_hematoxylin: 0.1  # H-channel value above which pixel is nuclear
+  struct_sharpness: 20.0             # sigmoid steepness (shared by both modes)
   # Warm-up: L_struct is disabled for the first N epochs
-  struct_warmup_epochs: 10
+  struct_warmup_epochs: 3            # luminance mode works early; shorter warm-up suffices
   # Linear ramp-up of lambda_struct over N epochs after warm-up ends
   struct_rampup_epochs: 5
-  # R1 gradient penalty on D: 0.5 * E[mean(||∇_x D(x)||^2)] weighted by lambda_r1.
-  # Uses mean (not sum) over spatial dims — resolution-independent.
-  # Prevents discriminator overconfidence (loss_D collapsing to ~0).
-  lambda_r1: 10.0
+  # R1 gradient penalty on D: complementary to spectral norm.
+  # With SN as primary D stabiliser, R1 serves as a secondary safeguard.
+  lambda_r1: 1.0
 
 # ------------------------------------------------------------
 # Training

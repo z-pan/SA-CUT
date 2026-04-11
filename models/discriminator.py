@@ -67,23 +67,34 @@ class NLayerDiscriminator(nn.Module):
         norm_type: str = getattr(config, "norm_type", "instance")
         use_spectral_norm: bool = getattr(config, "use_spectral_norm", False)
 
-        norm_layer = get_norm_layer(norm_type)
-        # InstanceNorm absorbs the bias → disable to avoid redundancy
-        use_bias: bool = norm_type == "instance"
-
         kw: int = 4   # kernel width (4×4 — standard PatchGAN)
         padw: int = 1  # padding
 
         # ------------------------------------------------------------------
+        # Spectral-norm mode (SNGAN-style): SN on every Conv2d, no IN.
+        # SN constrains the Lipschitz constant of D, preventing overconfidence
+        # without requiring careful R1 lambda tuning.
+        # Standard mode: InstanceNorm between convolutions (pix2pix convention).
+        # ------------------------------------------------------------------
+        if use_spectral_norm:
+            use_bias: bool = True  # no IN to absorb bias
+            norm_fn = get_norm_layer("none")
+            def _wrap(conv: nn.Module) -> nn.Module:
+                return nn.utils.spectral_norm(conv)
+        else:
+            norm_layer = get_norm_layer(norm_type)
+            use_bias = norm_type == "instance"
+            norm_fn = norm_layer
+            def _wrap(conv: nn.Module) -> nn.Module:
+                return conv
+
+        # ------------------------------------------------------------------
         # Layer 0 — first conv, no normalisation (standard pix2pix convention)
         # ------------------------------------------------------------------
-        first_conv: nn.Module = nn.Conv2d(
-            input_nc, ndf, kernel_size=kw, stride=2, padding=padw
-        )
-        if use_spectral_norm:
-            first_conv = nn.utils.spectral_norm(first_conv)
-
-        layers: list[nn.Module] = [first_conv, nn.LeakyReLU(0.2, inplace=True)]
+        layers: list[nn.Module] = [
+            _wrap(nn.Conv2d(input_nc, ndf, kernel_size=kw, stride=2, padding=padw)),
+            nn.LeakyReLU(0.2, inplace=True),
+        ]
 
         # ------------------------------------------------------------------
         # Layers 1 … n_layers−1 — stride-2 blocks with normalisation
@@ -93,15 +104,15 @@ class NLayerDiscriminator(nn.Module):
             nf_mult_prev = nf_mult
             nf_mult = min(2**n, 8)
             layers += [
-                nn.Conv2d(
+                _wrap(nn.Conv2d(
                     ndf * nf_mult_prev,
                     ndf * nf_mult,
                     kernel_size=kw,
                     stride=2,
                     padding=padw,
                     bias=use_bias,
-                ),
-                norm_layer(ndf * nf_mult),
+                )),
+                norm_fn(ndf * nf_mult),
                 nn.LeakyReLU(0.2, inplace=True),
             ]
 
@@ -111,15 +122,15 @@ class NLayerDiscriminator(nn.Module):
         nf_mult_prev = nf_mult
         nf_mult = min(2**n_layers, 8)
         layers += [
-            nn.Conv2d(
+            _wrap(nn.Conv2d(
                 ndf * nf_mult_prev,
                 ndf * nf_mult,
                 kernel_size=kw,
                 stride=1,
                 padding=padw,
                 bias=use_bias,
-            ),
-            norm_layer(ndf * nf_mult),
+            )),
+            norm_fn(ndf * nf_mult),
             nn.LeakyReLU(0.2, inplace=True),
         ]
 
@@ -127,7 +138,7 @@ class NLayerDiscriminator(nn.Module):
         # Output — 1-channel patch logits, no sigmoid (LSGAN)
         # ------------------------------------------------------------------
         layers.append(
-            nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw)
+            _wrap(nn.Conv2d(ndf * nf_mult, 1, kernel_size=kw, stride=1, padding=padw))
         )
 
         self.model = nn.Sequential(*layers)
