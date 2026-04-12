@@ -123,6 +123,10 @@ losses:
   struct_warmup_epochs: 3            # luminance mode works early; shorter warm-up suffices
   struct_rampup_epochs: 5            # Phase 2: L_struct weight ramps 0→5.0 over 5 epochs
   lambda_r1: 1.0                     # R1 gradient penalty; secondary to spectral norm
+  # Colour statistics matching: pushes generated mean/std toward real H&E
+  lambda_color: 5.0                  # match channel-wise mean + std of real H&E
+  color_stats_momentum: 0.01         # EMA update rate for running statistics
+  color_stats_warmup: 50             # batches before L_color activates
 
 # ------------------------------------------------------------
 # Training
