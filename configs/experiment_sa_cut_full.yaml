@@ -109,7 +109,7 @@ losses:
   lambda_patchnce: 1.0
   lambda_struct: 5.0                 # high weight — structure preservation is the
                                      # core SA-CUT contribution (see CLAUDE.md)
-  lambda_idt: 0.2                     # identity regulariser; lower to avoid fighting L_struct
+  lambda_idt: 0.5                     # identity loss: teaches eosin color from real H&E
   gan_mode: lsgan
   n_patchnce_layers: 5
   n_patches_per_layer: 256
@@ -130,7 +130,7 @@ losses:
 training:
   batch_size: 1
   lr_G: 2.0e-4
-  lr_D: 2.0e-4
+  lr_D: 1.0e-4                        # half of lr_G — slows D to maintain G-D balance
   beta1: 0.5
   beta2: 0.999
   n_epochs: 200                      # Phases 1+2: full LR
