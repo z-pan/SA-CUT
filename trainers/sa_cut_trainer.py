@@ -66,6 +66,7 @@ from torchvision.utils import make_grid
 
 from configs.config_utils import ConfigNamespace, save_config
 from data.dataset import UnpairedTPAFDataset
+from losses.color_stats_loss import ColorStatsLoss
 from losses.gan_loss import GANLoss
 from losses.sa_patchnce import RegionAwarePatchNCE
 from losses.structure_loss import StructureConsistencyLoss
@@ -266,6 +267,10 @@ class SACUTTrainer:
             warmup_epochs=cfg.losses.struct_warmup_epochs,
             ramp_epochs=cfg.losses.struct_rampup_epochs,
         ).to(self.device)
+        self.criterion_color = ColorStatsLoss(
+            momentum=getattr(cfg.losses, "color_stats_momentum", 0.01),
+            warmup_batches=getattr(cfg.losses, "color_stats_warmup", 50),
+        ).to(self.device)
 
         # Trigger lazy MLP head construction before the optimizer is created.
         # This ensures MLP parameters are captured by Adam from step 1.
@@ -440,13 +445,14 @@ class SACUTTrainer:
             elapsed = time.time() - t0
             logger.info(
                 "Epoch %03d/%d  %.0fs  lr=%.2e  "
-                "G=%.4f  D=%.4f  nce=%.4f  struct=%.4f  idt=%.4f",
+                "G=%.4f  D=%.4f  nce=%.4f  struct=%.4f  idt=%.4f  color=%.4f",
                 epoch, total_epochs - 1, elapsed, lr_g,
                 epoch_losses.get("loss_G", float("nan")),
                 epoch_losses.get("loss_D", float("nan")),
                 epoch_losses.get("loss_nce", float("nan")),
                 epoch_losses.get("loss_struct", float("nan")),
                 epoch_losses.get("loss_idt", float("nan")),
+                epoch_losses.get("loss_color", float("nan")),
             )
 
             for k, v in epoch_losses.items():
@@ -487,6 +493,9 @@ class SACUTTrainer:
                         m = self.mask_provider.get_mask(tpaf[b])  # (1, H, W)
                     masks.append(m.to(self.device))
                 mask = torch.stack(masks, dim=0)  # (B, 1, H, W)
+
+            # ── Update colour statistics EMA from real H&E ─────────────────
+            self.criterion_color.update_stats(real_he)
 
             # ── Single generator forward (reused by D and G updates) ──────
             # fake_he is computed WITH gradient so G's graph is intact for
@@ -667,7 +676,14 @@ class SACUTTrainer:
                 idt_out = self.G(idt_input)                            # (B, 3, H, W)
                 loss_idt = F.l1_loss(idt_out, real_he) * self.cfg.losses.lambda_idt
 
-            loss_G = loss_adv + loss_nce + loss_struct + loss_idt
+            # ── 5. Colour statistics matching ─────────────────────────────
+            _lambda_color = getattr(self.cfg.losses, "lambda_color", 0.0)
+            if _lambda_color > 0.0:
+                loss_color = self.criterion_color(fake_he) * _lambda_color
+            else:
+                loss_color = torch.zeros((), device=self.device)
+
+            loss_G = loss_adv + loss_nce + loss_struct + loss_idt + loss_color
 
         self._backward(loss_G, self.optimizer_G, self._g_params)
         _set_requires_grad(self.D, True)
@@ -678,6 +694,7 @@ class SACUTTrainer:
             "loss_nce": loss_nce.item(),
             "loss_struct": loss_struct.item(),
             "loss_idt": loss_idt.item(),
+            "loss_color": loss_color.item(),
         }
 
     # ------------------------------------------------------------------

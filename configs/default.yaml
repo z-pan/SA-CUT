@@ -102,6 +102,10 @@ losses:
   # R1 gradient penalty on D: complementary to spectral norm.
   # With SN as primary D stabiliser, R1 serves as a secondary safeguard.
   lambda_r1: 1.0
+  # Colour statistics matching: pushes generated mean/std toward real H&E
+  lambda_color: 5.0                  # match channel-wise mean + std of real H&E
+  color_stats_momentum: 0.01         # EMA update rate for running statistics
+  color_stats_warmup: 50             # batches before L_color activates
 
 # ------------------------------------------------------------
 # Training
