@@ -125,6 +125,9 @@ training:
   grad_clip_norm: 0.0
   # How many D steps per G step
   d_steps_per_g: 1
+  # D update gating (0 = disabled)
+  d_loss_gate_threshold: 0.0
+  d_loss_gate_ema_momentum: 0.05
 
 # ------------------------------------------------------------
 # Evaluation (run after training or on-the-fly)

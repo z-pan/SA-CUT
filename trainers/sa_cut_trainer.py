@@ -347,6 +347,26 @@ class SACUTTrainer:
         self.grad_clip: float = getattr(cfg.training, "grad_clip_norm", 0.0)
         self.d_steps_per_g: int = getattr(cfg.training, "d_steps_per_g", 1)
 
+        # ── D update gating ───────────────────────────────────────────────
+        # When D_loss EMA drops below threshold, skip D updates so G can
+        # catch up.  Set threshold=0.0 (default) to disable gating entirely.
+        self.d_loss_gate_threshold: float = getattr(
+            cfg.training, "d_loss_gate_threshold", 0.0
+        )
+        self.d_loss_ema: float = 1.0  # init high so gating never fires early
+        self.d_loss_ema_momentum: float = getattr(
+            cfg.training, "d_loss_gate_ema_momentum", 0.05
+        )
+        self._last_d_losses: Dict[str, float] = {}
+        self._d_gated: bool = False
+
+        if self.d_loss_gate_threshold > 0.0:
+            logger.info(
+                "D gating enabled: threshold=%.4f, EMA momentum=%.3f",
+                self.d_loss_gate_threshold,
+                self.d_loss_ema_momentum,
+            )
+
     # ------------------------------------------------------------------
     # Initialisation helpers
     # ------------------------------------------------------------------
@@ -443,9 +463,11 @@ class SACUTTrainer:
 
             lr_g = self.scheduler_G.get_last_lr()[0]
             elapsed = time.time() - t0
+            d_gate_pct = epoch_losses.get("d_gated", 0.0) * 100
             logger.info(
                 "Epoch %03d/%d  %.0fs  lr=%.2e  "
-                "G=%.4f  D=%.4f  nce=%.4f  struct=%.4f  idt=%.4f  color=%.4f",
+                "G=%.4f  D=%.4f  nce=%.4f  struct=%.4f  idt=%.4f  color=%.4f"
+                "  D_ema=%.4f  D_gate=%.0f%%",
                 epoch, total_epochs - 1, elapsed, lr_g,
                 epoch_losses.get("loss_G", float("nan")),
                 epoch_losses.get("loss_D", float("nan")),
@@ -453,6 +475,8 @@ class SACUTTrainer:
                 epoch_losses.get("loss_struct", float("nan")),
                 epoch_losses.get("loss_idt", float("nan")),
                 epoch_losses.get("loss_color", float("nan")),
+                self.d_loss_ema,
+                d_gate_pct,
             )
 
             for k, v in epoch_losses.items():
@@ -504,16 +528,50 @@ class SACUTTrainer:
             with self._amp_ctx():
                 fake_he: Tensor = self.G(gen_input)
 
-            # ── Discriminator update(s) ────────────────────────────────────
+            # ── Discriminator update(s) with optional gating ─────────────
             d_losses: Dict[str, float] = {}
-            for _ in range(self.d_steps_per_g):
-                d_losses = self.update_D(real_he, fake_he.detach())
+            gate_active = (
+                self.d_loss_gate_threshold > 0.0
+                and self.d_loss_ema < self.d_loss_gate_threshold
+            )
+            if gate_active:
+                # D is too strong — skip gradient update, but still evaluate
+                # D loss (no grad) so the EMA can track recovery and un-gate.
+                with torch.no_grad():
+                    pred_real = self.D(real_he)
+                    pred_fake = self.D(fake_he.detach())
+                    d_real = self.criterion_gan(pred_real, target_is_real=True)
+                    d_fake = self.criterion_gan(pred_fake, target_is_real=False)
+                    d_eval_loss = ((d_real + d_fake) * 0.5).item()
+                d_losses = {
+                    "loss_D": d_eval_loss,
+                    "loss_D_real": d_real.item(),
+                    "loss_D_fake": d_fake.item(),
+                    "loss_D_r1": 0.0,
+                }
+                self._d_gated = True
+                # Update EMA even when gated so we know when G has caught up
+                self.d_loss_ema = (
+                    (1.0 - self.d_loss_ema_momentum) * self.d_loss_ema
+                    + self.d_loss_ema_momentum * d_eval_loss
+                )
+            else:
+                for _ in range(self.d_steps_per_g):
+                    d_losses = self.update_D(real_he, fake_he.detach())
+                self._last_d_losses = d_losses
+                self._d_gated = False
+                # Update D loss EMA
+                self.d_loss_ema = (
+                    (1.0 - self.d_loss_ema_momentum) * self.d_loss_ema
+                    + self.d_loss_ema_momentum * d_losses["loss_D"]
+                )
 
             # ── Generator update ───────────────────────────────────────────
             g_losses = self.update_G(tpaf, mask, real_he, fake_he, gen_input, epoch)
 
             # ── Accumulate ────────────────────────────────────────────────
             all_losses = {**d_losses, **g_losses}
+            all_losses["d_gated"] = 1.0 if self._d_gated else 0.0
             for k, v in all_losses.items():
                 accum[k] += v
             n_iters += 1
@@ -798,6 +856,7 @@ class SACUTTrainer:
             "patchnce_state_dict": self.criterion_patchnce.state_dict(),
             "global_step": self.global_step,
             "config": self.cfg.to_dict(),
+            "d_loss_ema": self.d_loss_ema,
         }
         if self.scaler is not None:
             ckpt["scaler"] = self.scaler.state_dict()
@@ -838,6 +897,8 @@ class SACUTTrainer:
 
         self.start_epoch = ckpt["epoch"] + 1
         self.global_step = ckpt.get("global_step", 0)
+        if "d_loss_ema" in ckpt:
+            self.d_loss_ema = ckpt["d_loss_ema"]
 
         # Fast-forward LR schedulers to match the resumed epoch.
         # We step without a prior optimizer.step(), which is intentional here
