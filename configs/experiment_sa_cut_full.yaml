@@ -143,6 +143,12 @@ training:
   use_amp: false
   grad_clip_norm: 0.0
   d_steps_per_g: 1
+  # D update gating: skip D gradient steps when D_loss EMA < threshold.
+  # Prevents D from becoming too strong and starving G of useful gradients.
+  # Set 0.0 to disable.  When gated, D is still evaluated (no grad) so the
+  # EMA tracks recovery and automatically re-enables D updates.
+  d_loss_gate_threshold: 0.1           # gate D when EMA(D_loss) < 0.1
+  d_loss_gate_ema_momentum: 0.05       # EMA smoothing for D_loss tracking
 
 # ------------------------------------------------------------
 # Evaluation
