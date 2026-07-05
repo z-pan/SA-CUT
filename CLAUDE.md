@@ -38,6 +38,14 @@ CUDA            11.8 or 12.x
 - Experiment names: `{method}_{date}_{note}` (e.g., `sa_cut_20260317_baseline`)
 - All hyperparameters live in YAML config files under `configs/`. Never hardcode them.
 
+## Local Smoke Test
+
+Before pushing, run `bash scripts/smoke_test.sh` (= `train.py --fast_dev_run`): forces
+CPU, generates tiny synthetic patches (`scripts/make_smoke_data.py` → `data/smoke/`,
+gitignored), and runs 1 epoch end-to-end (data → G/D → all losses → optimizer step →
+checkpoint) in ~20 s. Catches wiring/shape/dtype bugs without a GPU or real data. Real
+training still runs on Colab (A100) via `notebooks/SA_CUT_Colab_Train.ipynb`.
+
 ## Key Training Rule
 
 **D collapse prevention is mandatory.** If `loss_D` drops below 0.1 (should be 0.3–0.7 for LSGAN), the adversarial gradient to G vanishes and G produces colorized-TPAF output instead of H&E. Set `lambda_r1 ≥ 1.0` and `lr_D = 1e-4` (half of `lr_G`) in all runs. See `.claude/skills/domain-biology.md` for full training protocol.

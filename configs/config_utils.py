@@ -218,7 +218,7 @@ def load_yaml(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Config file not found: {path}")
-    with path.open("r") as fh:
+    with path.open("r", encoding="utf-8") as fh:
         data = yaml.safe_load(fh)
     return data if data is not None else {}
 
@@ -370,7 +370,7 @@ def save_config(cfg: ConfigNamespace, path: str | Path) -> None:
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w") as fh:
+    with path.open("w", encoding="utf-8") as fh:
         yaml.dump(
             cfg.to_dict(),
             fh,

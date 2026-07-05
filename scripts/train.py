@@ -30,10 +30,16 @@ is fully reproducible.
 
 import argparse
 import logging
+import os
 import pprint
 import random
 import sys
 from pathlib import Path
+
+# Smoke test runs on CPU: hide CUDA before torch initialises so device selection
+# (cuda-if-available) resolves to CPU even on a machine with a GPU.
+if "--fast_dev_run" in sys.argv:
+    os.environ["CUDA_VISIBLE_DEVICES"] = "-1"   # "" is ambiguous; -1 reliably hides GPUs
 
 import numpy as np
 import torch
@@ -98,7 +104,41 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Build trainer and validate config, then exit without training.",
     )
+    parser.add_argument(
+        "--fast_dev_run",
+        action="store_true",
+        help=(
+            "Smoke test: force CPU, 1 epoch on tiny synthetic data "
+            "(data/smoke/, see scripts/make_smoke_data.py), throwaway output dirs. "
+            "Runs data -> G/D -> losses -> optimizer step -> checkpoint end-to-end "
+            "in seconds to catch wiring/shape/dtype bugs before pushing."
+        ),
+    )
     return parser
+
+
+# Config overrides applied by --fast_dev_run (appended last so they win).
+_SMOKE_OVERRIDES = [
+    "--training.n_epochs=1",
+    "--training.n_epochs_decay=0",
+    "--data.num_workers=0",
+    "--data.augment=false",
+    "--data.patch_size=128",
+    "--data.tpaf_dir=data/smoke/tpaf",
+    "--data.he_dir=data/smoke/he",
+    "--mask_provider.mode=precomputed",
+    "--mask_provider.mask_dir=data/smoke/masks",
+    "--experiment.name=_smoke",
+    "--experiment.log_dir=results/_smoke_logs",
+    "--experiment.checkpoint_dir=checkpoints/_smoke",
+    "--experiment.save_freq=1",
+    "--experiment.log_freq=1",
+    "--experiment.vis_freq=1",
+    "--experiment.use_tensorboard=false",
+    "--experiment.use_wandb=false",
+    "--losses.struct_warmup_epochs=0",
+    "--losses.color_stats_warmup=0",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -128,6 +168,11 @@ def main() -> None:
     # Split known args so that --key=value overrides can be forwarded to
     # parse_overrides without argparse complaining about unknown flags.
     known, override_tokens = parser.parse_known_args()
+
+    # Smoke test: append shrink-to-CPU overrides last so they take precedence.
+    if known.fast_dev_run:
+        override_tokens = override_tokens + _SMOKE_OVERRIDES
+        logger.info("--fast_dev_run: CPU smoke test on tiny synthetic data (data/smoke/).")
 
     # ── Load and resolve config ───────────────────────────────────────────
     cfg = load_config(
