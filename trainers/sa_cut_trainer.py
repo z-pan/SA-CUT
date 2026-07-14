@@ -68,6 +68,7 @@ from configs.config_utils import ConfigNamespace, save_config
 from data.dataset import UnpairedTPAFDataset
 from losses.color_stats_loss import ColorStatsLoss
 from losses.gan_loss import GANLoss
+from losses.region_color_loss import RegionColorStatsLoss
 from losses.sa_patchnce import RegionAwarePatchNCE
 from losses.structure_loss import StructureConsistencyLoss
 from models.discriminator import NLayerDiscriminator
@@ -267,10 +268,32 @@ class SACUTTrainer:
             warmup_epochs=cfg.losses.struct_warmup_epochs,
             ramp_epochs=cfg.losses.struct_rampup_epochs,
         ).to(self.device)
-        self.criterion_color = ColorStatsLoss(
-            momentum=getattr(cfg.losses, "color_stats_momentum", 0.01),
-            warmup_batches=getattr(cfg.losses, "color_stats_warmup", 50),
-        ).to(self.device)
+        # Colour loss: 'global' matches whole-image mean/std (ablation baseline);
+        # 'region' matches mean/std per nuclear / cytoplasm / background region,
+        # giving eosin a spatial anchor and removing the uniform-pink minimum.
+        self._region_color: bool = (
+            getattr(cfg.losses, "color_loss_mode", "global") == "region"
+        )
+        if self._region_color:
+            self.criterion_color = RegionColorStatsLoss(
+                momentum=getattr(cfg.losses, "color_stats_momentum", 0.01),
+                warmup_batches=getattr(cfg.losses, "color_stats_warmup", 50),
+                std_weight=getattr(cfg.losses, "color_std_weight", 1.0),
+                region_weights={
+                    "nuclear": getattr(cfg.losses, "color_w_nuclear", 1.0),
+                    "cytoplasm": getattr(cfg.losses, "color_w_cytoplasm", 1.5),
+                    "background": getattr(cfg.losses, "color_w_background", 0.5),
+                },
+                white_threshold=getattr(cfg.losses, "color_white_threshold", 0.8),
+                tpaf_fg_threshold=getattr(cfg.losses, "color_tpaf_fg_threshold", 0.1),
+                sharpness=getattr(cfg.losses, "color_region_sharpness", 10.0),
+                min_region_mass=getattr(cfg.losses, "color_min_region_mass", 4.0),
+            ).to(self.device)
+        else:
+            self.criterion_color = ColorStatsLoss(
+                momentum=getattr(cfg.losses, "color_stats_momentum", 0.01),
+                warmup_batches=getattr(cfg.losses, "color_stats_warmup", 50),
+            ).to(self.device)
 
         # Trigger lazy MLP head construction before the optimizer is created.
         # This ensures MLP parameters are captured by Adam from step 1.
@@ -519,7 +542,14 @@ class SACUTTrainer:
                 mask = torch.stack(masks, dim=0)  # (B, 1, H, W)
 
             # ── Update colour statistics EMA from real H&E ─────────────────
-            self.criterion_color.update_stats(real_he)
+            # Region mode needs a nuclear mask extracted from the real H&E to
+            # partition it; reuse the L_struct extractor (no gradient needed).
+            if self._region_color:
+                with torch.no_grad():
+                    real_nuc_mask = self.criterion_struct.extract_mask(real_he)
+                self.criterion_color.update_stats(real_he, real_nuc_mask)
+            else:
+                self.criterion_color.update_stats(real_he)
 
             # ── Single generator forward (reused by D and G updates) ──────
             # fake_he is computed WITH gradient so G's graph is intact for
@@ -735,9 +765,14 @@ class SACUTTrainer:
                 loss_idt = F.l1_loss(idt_out, real_he) * self.cfg.losses.lambda_idt
 
             # ── 5. Colour statistics matching ─────────────────────────────
+            # Region mode partitions by nuclear / cytoplasm / background using
+            # the TPAF input + mask; global mode matches whole-image moments.
             _lambda_color = getattr(self.cfg.losses, "lambda_color", 0.0)
             if _lambda_color > 0.0:
-                loss_color = self.criterion_color(fake_he) * _lambda_color
+                if self._region_color:
+                    loss_color = self.criterion_color(fake_he, tpaf, mask) * _lambda_color
+                else:
+                    loss_color = self.criterion_color(fake_he) * _lambda_color
             else:
                 loss_color = torch.zeros((), device=self.device)
 
@@ -946,6 +981,12 @@ class SACUTTrainer:
                 hem_mask.mean().item(),
                 step,
             )
+
+        # Region-colour coverage (region mode only): if cytoplasm coverage is
+        # near zero, the background / foreground thresholds are likely mis-set.
+        if self._region_color:
+            for region, frac in self.criterion_color.get_last_coverage().items():
+                self.tb_writer.add_scalar(f"train/color_cov_{region}", frac, step)
 
         try:
             import wandb  # noqa: PLC0415

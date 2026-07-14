@@ -127,6 +127,17 @@ losses:
   lambda_color: 5.0                  # match channel-wise mean + std of real H&E
   color_stats_momentum: 0.01         # EMA update rate for running statistics
   color_stats_warmup: 50             # batches before L_color activates
+  # Region-conditioned colour loss — fixes pale/uniform eosin by anchoring
+  # colour statistics per nuclear / cytoplasm / background region (Run 9).
+  color_loss_mode: region            # region | global (global = ablation baseline)
+  color_std_weight: 1.0
+  color_w_nuclear: 1.0
+  color_w_cytoplasm: 1.5             # emphasise eosin — the under-supervised region
+  color_w_background: 0.5
+  color_white_threshold: 0.8
+  color_tpaf_fg_threshold: 0.1
+  color_region_sharpness: 10.0
+  color_min_region_mass: 4.0
 
 # ------------------------------------------------------------
 # Training

@@ -106,6 +106,20 @@ losses:
   lambda_color: 5.0                  # match channel-wise mean + std of real H&E
   color_stats_momentum: 0.01         # EMA update rate for running statistics
   color_stats_warmup: 50             # batches before L_color activates
+  # Colour loss mode:
+  #   global — match whole-image channel mean/std (ColorStatsLoss). Degenerate
+  #            minimum is uniform pink; kept as ablation baseline.
+  #   region — match mean/std per nuclear / cytoplasm / background region
+  #            (RegionColorStatsLoss). Gives eosin a spatial colour anchor.
+  color_loss_mode: global            # global | region
+  color_std_weight: 1.0              # weight of the per-region std term (β)
+  color_w_nuclear: 1.0               # region loss multiplier: nuclei (hematoxylin)
+  color_w_cytoplasm: 1.5             # region loss multiplier: cytoplasm (eosin, under-supervised)
+  color_w_background: 0.5            # region loss multiplier: background (white)
+  color_white_threshold: 0.8         # real-side luminance above which non-nuclear = white bg
+  color_tpaf_fg_threshold: 0.1       # gen-side TPAF above which non-nuclear = cytoplasm
+  color_region_sharpness: 10.0       # sigmoid steepness for soft bg/fg region partition
+  color_min_region_mass: 4.0         # skip a region whose pixel mass < this in a batch
 
 # ------------------------------------------------------------
 # Training
