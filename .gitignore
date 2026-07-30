@@ -77,3 +77,6 @@ tmp/
 # Secrets / credentials
 .env
 *.key
+
+# Local transfer/handoff notes (kept out of version control)
+SA-CUT_transfer.md
