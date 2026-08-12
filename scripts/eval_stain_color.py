@@ -59,7 +59,8 @@ def _index(directory: Path) -> dict[str, Path]:
             if p.is_file() and p.suffix.lower() in _EXT}
 
 
-def _summarise(nuc: list[np.ndarray], cyt: list[np.ndarray], label: str) -> dict:
+def _summarise(nuc: list[np.ndarray], cyt: list[np.ndarray], label: str,
+               green: list[float] | None = None) -> dict:
     out = {"set": label, "n": len(cyt)}
     for name, vals in (("nuc", nuc), ("cyt", cyt)):
         if vals:
@@ -69,13 +70,28 @@ def _summarise(nuc: list[np.ndarray], cyt: list[np.ndarray], label: str) -> dict
         else:
             for k in ("R", "G", "B", "RmB"):
                 out[f"{name}_{k}"] = float("nan")
+    out["green_pct"] = float(np.mean(green)) if green else float("nan")
     return out
+
+
+def _green_fraction(img: np.ndarray, tissue: np.ndarray) -> float:
+    """Percentage of tissue pixels where green dominates both other channels.
+
+    H&E has no green ink, so a real section scores ~0. A non-trivial value means
+    the generator is inventing colours that cannot occur in the target domain —
+    an artifact the per-region R-B statistic cannot see, because a green pixel
+    has low R *and* low B and so leaves R-B near zero.
+    """
+    if tissue.sum() == 0:
+        return float("nan")
+    R, G, B = img[..., 0], img[..., 1], img[..., 2]
+    return 100.0 * float(((G > R) & (G > B) & tissue).sum()) / float(tissue.sum())
 
 
 def measure_virtual(args) -> dict:
     """Region colours of the virtual set, using the TPAF nuclear masks."""
     masks = _index(Path(args.nuc_mask))
-    nuc, cyt = [], []
+    nuc, cyt, green = [], [], []
     missing = 0
     for p in sorted(Path(args.virtual).iterdir()):
         if not (p.is_file() and p.suffix.lower() in _EXT):
@@ -95,16 +111,17 @@ def measure_virtual(args) -> dict:
             continue
         nuc.append(img[n_sel].mean(0))
         cyt.append(img[c_sel].mean(0))
+        green.append(_green_fraction(img, tissue))
     if missing:
         print(f"  [warn] {missing} virtual images had no matching mask "
               f"(check --virtual-suffix)", file=sys.stderr)
-    return _summarise(nuc, cyt, "virtual")
+    return _summarise(nuc, cyt, "virtual", green)
 
 
 def measure_real(args) -> dict:
     """Region colours of the real reference, using the H channel when available."""
     hmap = _index(Path(args.real_h)) if args.real_h else {}
-    nuc, cyt = [], []
+    nuc, cyt, green = [], [], []
     for p in sorted(Path(args.real).iterdir()):
         if not (p.is_file() and p.suffix.lower() in _EXT):
             continue
@@ -122,7 +139,8 @@ def measure_real(args) -> dict:
             continue
         nuc.append(img[n_sel].mean(0))
         cyt.append(img[c_sel].mean(0))
-    return _summarise(nuc, cyt, "real")
+        green.append(_green_fraction(img, tissue))
+    return _summarise(nuc, cyt, "real", green)
 
 
 def main() -> None:
@@ -164,6 +182,12 @@ def main() -> None:
         gap = virt[f"{region}_RmB"] - real[f"{region}_RmB"]
         print(f"  {'gap':<8} {'':>7} {'':>7} {'':>7} {gap:>8.1f}   "
               f"{'<- minimise (negative = too violet)' if abs(gap) > 3 else '<- close'}\n")
+
+    print(f"[impossible colours]  green-dominant tissue pixels "
+          f"(H&E has no green ink, real ~0)")
+    print(f"  {'real':<8} {real['green_pct']:>7.2f} %")
+    flag = "  <- ARTIFACT" if virt["green_pct"] > 1.0 else "  <- clean"
+    print(f"  {'virtual':<8} {virt['green_pct']:>7.2f} % {flag}\n")
 
     if args.out:
         with open(args.out, "w", newline="", encoding="utf-8") as fh:
