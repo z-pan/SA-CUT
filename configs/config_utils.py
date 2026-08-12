@@ -171,9 +171,18 @@ def _coerce_value(s: str) -> Any:
         The coerced Python value.
     """
     try:
-        return yaml.safe_load(s)
+        value = yaml.safe_load(s)
     except yaml.YAMLError:
         return s
+    # PyYAML follows YAML 1.1, which only recognises scientific notation when it
+    # carries an explicit decimal point: "2.0e-4" parses as a float but "5e-5"
+    # survives as a string and would silently reach the optimizer as text.
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    return value
 
 
 # ---------------------------------------------------------------------------
