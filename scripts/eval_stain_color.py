@@ -43,6 +43,8 @@ import numpy as np
 from PIL import Image
 
 _EXT = (".png", ".tif", ".tiff", ".jpg", ".jpeg")
+# Pre-computed nuclear masks are .npy in this pipeline; the virtual images are not.
+_MASK_EXT = _EXT + (".npy",)
 
 
 def _rgb(path: Path) -> np.ndarray:
@@ -50,13 +52,20 @@ def _rgb(path: Path) -> np.ndarray:
 
 
 def _gray(path: Path) -> np.ndarray:
+    """Load a single-channel image or a .npy mask as float32."""
+    if path.suffix.lower() == ".npy":
+        a = np.load(path).astype(np.float32)
+        if a.ndim == 3:
+            a = a[..., 0] if a.shape[-1] in (1, 2, 3) else a[0]
+        # .npy masks are float in [0, 1]; put them on the same 0-255 scale as PNGs.
+        return a * 255.0 if a.max() <= 1.0 else a
     return np.array(Image.open(path).convert("L"), dtype=np.float32)
 
 
-def _index(directory: Path) -> dict[str, Path]:
-    """Map filename stem → path for every image in *directory*."""
-    return {p.stem: p for p in sorted(directory.iterdir())
-            if p.is_file() and p.suffix.lower() in _EXT}
+def _index(directory: Path, exts: tuple[str, ...] = _EXT) -> dict[str, Path]:
+    """Map filename stem → path for every file in *directory* matching *exts*."""
+    return {p.stem: p for p in sorted(directory.rglob("*"))
+            if p.is_file() and p.suffix.lower() in exts}
 
 
 def _summarise(nuc: list[np.ndarray], cyt: list[np.ndarray], label: str,
@@ -90,7 +99,7 @@ def _green_fraction(img: np.ndarray, tissue: np.ndarray) -> float:
 
 def measure_virtual(args) -> dict:
     """Region colours of the virtual set, using the TPAF nuclear masks."""
-    masks = _index(Path(args.nuc_mask))
+    masks = _index(Path(args.nuc_mask), _MASK_EXT)
     nuc, cyt, green = [], [], []
     missing = 0
     for p in sorted(Path(args.virtual).iterdir()):
@@ -114,7 +123,8 @@ def measure_virtual(args) -> dict:
         green.append(_green_fraction(img, tissue))
     if missing:
         print(f"  [warn] {missing} virtual images had no matching mask "
-              f"(check --virtual-suffix)", file=sys.stderr)
+              f"(indexed {len(masks)} masks; check --virtual-suffix and that the "
+              f"stems line up)", file=sys.stderr)
     return _summarise(nuc, cyt, "virtual", green)
 
 
