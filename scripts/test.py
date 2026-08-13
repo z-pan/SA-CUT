@@ -230,9 +230,16 @@ def _find_tpaf_patches(input_dir: Path) -> List[Path]:
     """
     if not input_dir.exists():
         raise FileNotFoundError(f"input_dir not found: {input_dir}")
+    # .npy is the pipeline's native format, but the patches shipped on Drive are
+    # 8-bit PNG/TIF, so accept those too rather than failing on a format detail.
     patches = sorted(input_dir.glob("**/*.npy"))
     if not patches:
-        raise RuntimeError(f"No .npy patch files found under: {input_dir}")
+        for ext in ("png", "tif", "tiff"):
+            patches += sorted(input_dir.glob(f"**/*.{ext}"))
+        patches = sorted(patches)
+    if not patches:
+        raise RuntimeError(
+            f"No .npy/.png/.tif patch files found under: {input_dir}")
     return patches
 
 
@@ -247,7 +254,14 @@ def _load_tpaf(path: Path) -> Tensor:
     Returns:
         Float32 tensor of shape ``(1, H, W)`` in ``[0, 1]``.
     """
-    array = np.load(path).astype(np.float32)
+    if path.suffix.lower() == ".npy":
+        array = np.load(path).astype(np.float32)
+    else:
+        # 8-bit image: scale to [0, 1] to match the .npy convention.
+        array = np.array(Image.open(path), dtype=np.float32) / 255.0
+
+    if array.ndim == 3 and array.shape[-1] == 3:
+        array = array[..., :1]          # RGB-encoded grayscale TPAF
 
     if array.ndim == 2:
         array = array[np.newaxis]
