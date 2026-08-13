@@ -1,0 +1,139 @@
+# ============================================================================
+# SA-CUT v2 — checkerboard-free decoder + rebalanced discriminator
+# ============================================================================
+#
+# Why a second config instead of editing experiment_sa_cut_full.yaml:
+# that file defines E1 exactly as trained, and the ablation table compares
+# against it. This one changes the architecture, so it needs training from
+# scratch and cannot resume from an E1 checkpoint (the decoder weight shapes
+# differ).
+#
+# What E1 showed (epoch 399, measured on the fixed 40-patch set)
+# --------------------------------------------------------------
+#   cytoplasm R-B gap   +5.6   (epoch 186: -0.1)
+#   nuclei    R-B gap  +15.7   (epoch 186: +16.4)
+#   green-dominant px   9.34 % (epoch 186: 13.61 %; real H&E: 0.01 %)
+#   d_loss_ema          0.173  (epoch 186: 0.129; healthy band 0.3-0.7)
+#
+# Rebalancing D moved every number in the right direction but none far enough,
+# and the visual result got *worse*: the large green blotches of epoch 186 were
+# replaced by a fine periodic weave. Two artifacts, one mechanism -- the decoder
+# upsamples with ConvTranspose2d(kernel=3, stride=2), where 3 is not divisible
+# by 2, so output positions receive uneven numbers of kernel weights and each
+# stage doubles the imbalance. D never rose into its healthy band because these
+# artifacts make every generated patch trivially identifiable.
+#
+# Changes from experiment_sa_cut_full.yaml
+# ----------------------------------------
+#   generator.decoder_upsample: transpose -> resize_conv
+#       Nearest-neighbour upsample + stride-1 conv. Removes the checkerboard
+#       mechanism rather than penalising its output.
+#   training.d_loss_gate_threshold: 0.1 -> 0.3   (carried over from the resume)
+#   training.lr_D: 1e-4 -> 5e-5                  (carried over from the resume)
+#
+# Everything else is identical to E1, so the comparison isolates the decoder.
+#
+# Expected: green-dominant pixels below ~1 %. If they persist after ~30 epochs,
+# the next levers are norm_type (instance -> group, since InstanceNorm amplifies
+# near-zero-variance regions) and an explicit colour-gamut penalty.
+# ============================================================================
+
+experiment:
+  name: sa_cut_v2
+  checkpoint_dir: checkpoints
+  log_dir: results/logs
+  use_wandb: false
+  use_tensorboard: true
+
+model:
+  type: sa_cut
+
+data:
+  tpaf_dir: data/raw/tpaf
+  he_dir: data/raw/he
+  patch_size: 512
+  tpaf_channels: 1
+  tpaf_norm_percentile_low: 1.0
+  tpaf_norm_percentile_high: 99.0
+  he_norm_range: [-1, 1]
+  num_workers: 2
+  pin_memory: true
+  augment: true
+
+mask_provider:
+  mode: precomputed
+  mask_dir: data/patches/masks
+  output_type: binary
+  binarize_threshold: 0.5
+  log_mask_stats: true
+
+generator:
+  input_nc: 2
+  output_nc: 3
+  ngf: 64
+  n_resnet_blocks: 9
+  norm_type: instance
+  use_dropout: false
+  mask_injection: early_fusion
+  decoder_upsample: resize_conv      # <-- the change under test
+  init_type: normal
+  init_gain: 0.02
+
+discriminator:
+  input_nc: 3
+  ndf: 64
+  n_layers: 3
+  norm_type: instance
+  use_spectral_norm: true
+  init_type: normal
+  init_gain: 0.02
+
+losses:
+  lambda_adv: 1.0
+  lambda_patchnce: 1.0
+  lambda_struct: 5.0
+  lambda_idt: 0.5
+  gan_mode: lsgan
+  n_patchnce_layers: 5
+  n_patches_per_layer: 256
+  patchnce_mode: region_aware
+  struct_loss_mode: luminance
+  struct_threshold_luminance: 0.5
+  struct_threshold_hematoxylin: 0.1
+  struct_sharpness: 20.0
+  struct_warmup_epochs: 3
+  struct_rampup_epochs: 5
+  lambda_r1: 1.0
+  lambda_color: 5.0
+  color_stats_momentum: 0.01
+  color_stats_warmup: 50
+  color_loss_mode: region
+  color_std_weight: 1.0
+  color_w_nuclear: 1.0
+  color_w_cytoplasm: 1.5
+  color_w_background: 0.5
+  color_white_threshold: 0.8
+  color_tpaf_fg_threshold: 0.1
+  color_region_sharpness: 10.0
+  color_min_region_mass: 4.0
+
+training:
+  batch_size: 1
+  lr_G: 2.0e-4
+  lr_D: 5.0e-5                       # halved: D was winning throughout E1
+  beta1: 0.5
+  beta2: 0.999
+  n_epochs: 200
+  n_epochs_decay: 200
+  seed: 42
+  use_amp: false
+  grad_clip_norm: 0.0
+  d_steps_per_g: 1
+  d_loss_gate_threshold: 0.3         # hold D back until EMA(loss_D) recovers
+  d_loss_gate_ema_momentum: 0.05
+
+evaluation:
+  fid_real_dir: data/raw/he
+  fid_batch_size: 50
+  fid_dims: 2048
+  struct_iou_threshold: 0.5

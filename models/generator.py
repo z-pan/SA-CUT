@@ -149,6 +149,14 @@ class ResNetGenerator(nn.Module):
         n_resnet_blocks: int = config.n_resnet_blocks
         norm_type: str = getattr(config, "norm_type", "instance")
         use_dropout: bool = getattr(config, "use_dropout", False)
+        # "transpose" reproduces the original architecture; "resize_conv" removes
+        # the checkerboard mechanism. Default stays "transpose" so existing
+        # checkpoints and ablation baselines load unchanged.
+        decoder_upsample: str = getattr(config, "decoder_upsample", "transpose")
+        if decoder_upsample not in ("transpose", "resize_conv"):
+            raise ValueError(
+                f"decoder_upsample must be 'transpose' or 'resize_conv', "
+                f"got {decoder_upsample!r}")
 
         norm_layer = get_norm_layer(norm_type)
         # InstanceNorm absorbs bias → disable conv bias to avoid redundancy
@@ -198,16 +206,32 @@ class ResNetGenerator(nn.Module):
         # ------------------------------------------------------------------
         for i in range(self._N_DOWNSAMPLING):
             mult = 2 ** (self._N_DOWNSAMPLING - i)
-            layers += [
-                nn.ConvTranspose2d(
-                    ngf * mult,
-                    ngf * mult // 2,
-                    kernel_size=3,
-                    stride=2,
-                    padding=1,
-                    output_padding=1,
-                    bias=use_bias,
-                ),
+            if decoder_upsample == "resize_conv":
+                # ConvTranspose2d(kernel=3, stride=2) is the classic checkerboard
+                # case: 3 is not divisible by 2, so output positions receive
+                # uneven numbers of kernel weights and the imbalance is doubled by
+                # each successive upsampling stage. Nearest-neighbour resize
+                # followed by a stride-1 conv removes the mechanism entirely
+                # (Odena et al., "Deconvolution and Checkerboard Artifacts").
+                up = [
+                    nn.Upsample(scale_factor=2, mode="nearest"),
+                    nn.ReflectionPad2d(1),
+                    nn.Conv2d(ngf * mult, ngf * mult // 2, kernel_size=3,
+                              stride=1, padding=0, bias=use_bias),
+                ]
+            else:
+                up = [
+                    nn.ConvTranspose2d(
+                        ngf * mult,
+                        ngf * mult // 2,
+                        kernel_size=3,
+                        stride=2,
+                        padding=1,
+                        output_padding=1,
+                        bias=use_bias,
+                    ),
+                ]
+            layers += up + [
                 norm_layer(ngf * mult // 2),
                 nn.ReLU(inplace=True),
             ]
