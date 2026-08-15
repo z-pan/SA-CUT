@@ -28,7 +28,7 @@
 #   generator.decoder_upsample: transpose -> resize_conv
 #       Nearest-neighbour upsample + stride-1 conv. Removes the checkerboard
 #       mechanism rather than penalising its output.
-#   training.d_loss_gate_threshold: 0.1 -> 0.3   (carried over from the resume)
+#   training.d_loss_gate_threshold: 0.1 -> 0.2   (see below)
 #   training.lr_D: 1e-4 -> 5e-5                  (carried over from the resume)
 #
 # Everything else is identical to E1, so the comparison isolates the decoder.
@@ -36,6 +36,29 @@
 # Expected: green-dominant pixels below ~1 %. If they persist after ~30 epochs,
 # the next levers are norm_type (instance -> group, since InstanceNorm amplifies
 # near-zero-variance regions) and an explicit colour-gamut penalty.
+#
+# Reading loss_D under LSGAN, and why the gate is 0.2
+# ---------------------------------------------------
+# loss_D = 0.5 * [(D(real) - 1)^2 + D(fake)^2]. At the balance point D(real) =
+# D(fake) = 0.5, so **loss_D = 0.25 is equilibrium, not a failure**. The
+# "healthy band 0.3-0.7" quoted in earlier notes is the vanilla/BCE scale
+# (equilibrium 0.693) and does not apply here.
+#
+# The first v2 short run (E1_sa_cut_v2_short, 2026-08-14) set the gate at 0.3,
+# i.e. above equilibrium. The EMA starts at 1.0 and falls past 0.3 within ~77
+# steps, the gate closes, and it can never reopen: a gate demanding D perform
+# *worse than equilibrium* is unsatisfiable. D took ~77 updates in 51k
+# iterations and was frozen for the rest -- visible as D_gate=100% and as a 32%
+# drop in epoch time (536s -> 366s) from skipping D's backward pass. Nothing
+# about the decoder can be concluded from that run.
+#
+# 0.2 sits just below equilibrium: it engages when D is genuinely winning
+# (loss_D -> 0) and releases once D returns to balance. E1's 0.1 was too low --
+# D_ema hovered at 0.13-0.20, dominating G while almost never tripping the gate.
+#
+# Do not judge balance from loss_D alone: a dead D emitting ~0.5 for everything
+# also scores 0.25. Watch the real/fake split in the epoch log (they must stay
+# apart) and keep D_gate well below 100%.
 # ============================================================================
 
 experiment:
@@ -129,7 +152,7 @@ training:
   use_amp: false
   grad_clip_norm: 0.0
   d_steps_per_g: 1
-  d_loss_gate_threshold: 0.3         # hold D back until EMA(loss_D) recovers
+  d_loss_gate_threshold: 0.2         # gate D when it is winning; see note below
   d_loss_gate_ema_momentum: 0.05
 
 evaluation:

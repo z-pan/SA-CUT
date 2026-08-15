@@ -139,7 +139,10 @@ training:
   grad_clip_norm: 0.0
   # How many D steps per G step
   d_steps_per_g: 1
-  # D update gating (0 = disabled)
+  # D update gating (0 = disabled). Skips D's gradient step while EMA(loss_D) is
+  # below the threshold, i.e. while D is winning. Set it BELOW the gan_mode's
+  # equilibrium loss (lsgan: 0.25, vanilla: 0.693) -- a threshold above
+  # equilibrium can never be satisfied and freezes D permanently.
   d_loss_gate_threshold: 0.0
   d_loss_gate_ema_momentum: 0.05
 

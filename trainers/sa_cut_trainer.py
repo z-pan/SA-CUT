@@ -373,6 +373,10 @@ class SACUTTrainer:
         # ── D update gating ───────────────────────────────────────────────
         # When D_loss EMA drops below threshold, skip D updates so G can
         # catch up.  Set threshold=0.0 (default) to disable gating entirely.
+        # The threshold must sit BELOW the gan_mode's equilibrium loss (lsgan:
+        # 0.25, vanilla: 0.693). Above it, the condition is always true once the
+        # EMA has settled, so the gate latches shut and D never trains again --
+        # which is what 0.3 did to the first v2 run.
         self.d_loss_gate_threshold: float = getattr(
             cfg.training, "d_loss_gate_threshold", 0.0
         )
@@ -487,13 +491,23 @@ class SACUTTrainer:
             lr_g = self.scheduler_G.get_last_lr()[0]
             elapsed = time.time() - t0
             d_gate_pct = epoch_losses.get("d_gated", 0.0) * 100
+            # D's real/fake halves are logged separately because the combined
+            # loss_D cannot distinguish a balanced discriminator from a dead one:
+            # under LSGAN both land near 0.25, the first because D(real) and
+            # D(fake) straddle 0.5 and the second because D emits ~0.5 for
+            # everything. Only the split shows whether D still separates the two.
+            # It is also the only unambiguous GAN reading here -- loss_D carries
+            # the R1 penalty on updated steps but not on gated ones.
             logger.info(
                 "Epoch %03d/%d  %.0fs  lr=%.2e  "
-                "G=%.4f  D=%.4f  nce=%.4f  struct=%.4f  idt=%.4f  color=%.4f"
+                "G=%.4f  D=%.4f (real %.4f / fake %.4f)  "
+                "nce=%.4f  struct=%.4f  idt=%.4f  color=%.4f"
                 "  D_ema=%.4f  D_gate=%.0f%%",
                 epoch, total_epochs - 1, elapsed, lr_g,
                 epoch_losses.get("loss_G", float("nan")),
                 epoch_losses.get("loss_D", float("nan")),
+                epoch_losses.get("loss_D_real", float("nan")),
+                epoch_losses.get("loss_D_fake", float("nan")),
                 epoch_losses.get("loss_nce", float("nan")),
                 epoch_losses.get("loss_struct", float("nan")),
                 epoch_losses.get("loss_idt", float("nan")),
