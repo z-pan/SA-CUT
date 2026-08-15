@@ -50,11 +50,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from configs.config_utils import load_config, save_config
 from trainers.sa_cut_trainer import SACUTTrainer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
+_LOG_FORMAT = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
+_LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+
+logging.basicConfig(level=logging.INFO, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_CONFIG = Path(__file__).resolve().parent.parent / "configs" / "default.yaml"
@@ -161,6 +160,39 @@ def _seed_all(seed: int) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _attach_log_file(run_dir: Path) -> Path:
+    """Mirror everything on the console into ``run_dir/train.log``.
+
+    A Colab session's cell output is not an artifact of the run: it is lost on
+    disconnect, truncated when long, and gone entirely if the tab is closed. The
+    text log is the only record of the loss curves in readable form, and of which
+    config actually ran, so it belongs next to the checkpoints on Drive.
+
+    Opened in append mode. The E1 workflow disconnects and resumes repeatedly, and
+    a resumed session should extend the record rather than erase it; each session
+    re-logs the resolved config, which marks the boundary.
+    """
+    log_path = run_dir / "train.log"
+    handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    handler.setFormatter(logging.Formatter(fmt=_LOG_FORMAT, datefmt=_LOG_DATEFMT))
+    logging.getLogger().addHandler(handler)
+
+    # An uncaught traceback goes to stderr only, so a run that dies leaves nothing
+    # in the file -- and the failures worth reading later (a missing mask dir, a
+    # bad Drive path) happen while the trainer is being built, before any
+    # try/except around training. Hook the whole process instead, then hand off to
+    # the previous hook so the console traceback and exit code are unchanged.
+    previous_hook = sys.excepthook
+
+    def log_then_reraise(exc_type, exc, tb):
+        if not issubclass(exc_type, KeyboardInterrupt):
+            logger.error("Uncaught exception", exc_info=(exc_type, exc, tb))
+        previous_hook(exc_type, exc, tb)
+
+    sys.excepthook = log_then_reraise
+    return log_path
+
+
 def main() -> None:
     """Parse args, load config, build trainer, run training."""
     parser = _build_parser()
@@ -181,6 +213,12 @@ def main() -> None:
         cli_args=override_tokens,
     )
 
+    # ── Start logging to file before anything about this run is logged ────
+    run_dir = Path(cfg.experiment.log_dir) / cfg.experiment.name
+    run_dir.mkdir(parents=True, exist_ok=True)
+    log_path = _attach_log_file(run_dir)
+    logger.info("Log file → %s", log_path)
+
     # ── Seed early ───────────────────────────────────────────────────────
     seed = getattr(cfg.training, "seed", 42)
     _seed_all(seed)
@@ -190,8 +228,6 @@ def main() -> None:
     logger.info("Resolved configuration:\n%s", pprint.pformat(cfg.to_dict(), width=100))
 
     # ── Save config to experiment dir (pre-flight) ────────────────────────
-    run_dir = Path(cfg.experiment.log_dir) / cfg.experiment.name
-    run_dir.mkdir(parents=True, exist_ok=True)
     pre_flight_path = run_dir / "config_preflight.yaml"
     save_config(cfg, str(pre_flight_path))
     logger.info("Pre-flight config saved → %s", pre_flight_path)
