@@ -236,9 +236,18 @@ class SACUTTrainer:
         # ── Mask provider ──────────────────────────────────────────────────
         self.mask_provider: MaskProvider = build_mask_provider(cfg)
         self._onthefly_mask: bool = isinstance(self.mask_provider, CellposeSAMMaskProvider)
+        # Whether the mask is a *generator input channel*, which is a different
+        # question from whether a mask exists. The CUT baseline builds G with
+        # input_nc=1 and mask_injection='none', but a mask is still produced (the
+        # smoke test writes synthetic ones, and PatchNCE can take one), so
+        # concatenating unconditionally handed a 1-channel encoder 2 channels.
+        self._mask_input: bool = (
+            getattr(cfg.generator, "mask_injection", "none") != "none"
+        )
         logger.info(
-            "Mask mode: %s",
+            "Mask mode: %s  |  generator input: %s",
             "on-the-fly Cellpose-SAM" if self._onthefly_mask else "precomputed",
+            "TPAF + mask" if self._mask_input else "TPAF only",
         )
 
         # ── PatchNCE layer configuration ───────────────────────────────────
@@ -568,7 +577,8 @@ class SACUTTrainer:
             # ── Single generator forward (reused by D and G updates) ──────
             # fake_he is computed WITH gradient so G's graph is intact for
             # the G update.  The D update receives fake_he.detach().
-            gen_input = torch.cat([tpaf, mask], dim=1)  # (B, 2, H, W)
+            gen_input = (torch.cat([tpaf, mask], dim=1) if self._mask_input
+                         else tpaf)                     # (B, 2 or 1, H, W)
             with self._amp_ctx():
                 fake_he: Tensor = self.G(gen_input)
 
@@ -747,7 +757,8 @@ class SACUTTrainer:
             # Appending the same nuclear mask provides the encoder with identical
             # structural conditioning in both domains, so features are comparable.
             fake_gray = _rgb_to_gray(fake_he)                          # (B, 1, H, W)
-            enc_gen = torch.cat([fake_gray, mask], dim=1)              # (B, 2, H, W)
+            enc_gen = (torch.cat([fake_gray, mask], dim=1) if self._mask_input
+                       else fake_gray)                                # (B, 2 or 1, H, W)
             feat_gen = self.G.get_encoder_features(enc_gen, self.layer_indices)
 
             loss_nce = (
@@ -774,7 +785,8 @@ class SACUTTrainer:
                 real_gray = _rgb_to_gray(real_he)                      # (B, 1, H, W)
                 with torch.no_grad():
                     real_hem_mask = self.criterion_struct.extract_mask(real_he)
-                idt_input = torch.cat([real_gray, real_hem_mask], dim=1)  # (B, 2, H, W)
+                idt_input = (torch.cat([real_gray, real_hem_mask], dim=1)
+                             if self._mask_input else real_gray)      # (B, 2 or 1, H, W)
                 idt_out = self.G(idt_input)                            # (B, 3, H, W)
                 loss_idt = F.l1_loss(idt_out, real_he) * self.cfg.losses.lambda_idt
 

@@ -278,6 +278,14 @@ def _load_tpaf(path: Path) -> Tensor:
     return torch.from_numpy(array).clamp(0.0, 1.0)
 
 
+def _generator_input_nc(G) -> int:
+    """Channels the generator's first convolution expects."""
+    for m in G.modules():
+        if isinstance(m, torch.nn.Conv2d):
+            return int(m.in_channels)
+    raise RuntimeError('no Conv2d in the generator')
+
+
 def _tensor_to_pil(fake_he: Tensor) -> Image.Image:
     """Convert a ``(3, H, W)`` ``[-1, 1]`` tensor to an 8-bit RGB PIL image.
 
@@ -588,7 +596,12 @@ def _run_inference(
         tpaf_batch = torch.stack(tpaf_tensors, dim=0).to(device)  # (B, 1, H, W)
         mask_batch = torch.stack(mask_tensors, dim=0).to(device)  # (B, 1, H, W)
 
-        gen_input = torch.cat([tpaf_batch, mask_batch], dim=1)    # (B, 2, H, W)
+        # The generator knows how many channels it was built for; the CUT baseline
+        # uses input_nc=1 with mask_injection='none', and concatenating the mask
+        # there hands a 1-channel encoder 2 channels. Reading it off the first
+        # convolution avoids threading the config through this function.
+        gen_input = (torch.cat([tpaf_batch, mask_batch], dim=1)
+                     if _generator_input_nc(G) == 2 else tpaf_batch)
         fake_he_batch = G(gen_input)                               # (B, 3, H, W) [-1,1]
 
         for i, p in enumerate(batch_paths):
