@@ -110,6 +110,40 @@ class MaskProvider(ABC):
 
 
 # ---------------------------------------------------------------------------
+# Mode "none" — no mask at all
+# ---------------------------------------------------------------------------
+
+
+class NullMaskProvider(MaskProvider):
+    """Return an all-zero mask.
+
+    For architectures that take no mask: the CUT baseline builds its generator
+    with ``input_nc=1`` and ``mask_injection='none'``, and nothing in that run
+    reads a nuclear mask -- PatchNCE falls back to its standard form and
+    ``lambda_struct`` is 0.
+
+    ``UnpairedTPAFDataset`` already returns zeros when ``mask_dir`` is None, and
+    the trainer already passes None for any mode but 'precomputed', so this class
+    exists so that ``build_mask_provider`` has something to return rather than
+    rejecting a mode the configs declare. Before this, every CUT run stopped at
+    construction with "Unknown mask_provider mode: 'none'".
+    """
+
+    def get_mask(self, source: Union[str, Tensor, np.ndarray]) -> Tensor:
+        if isinstance(source, Tensor):
+            h, w = source.shape[-2:]
+        elif isinstance(source, np.ndarray):
+            h, w = source.shape[-2:]
+        else:
+            raise TypeError(
+                "NullMaskProvider needs a tensor or array to size the mask, "
+                f"got {type(source).__name__}. It is not reached in precomputed "
+                "mode, where the dataset supplies the zeros itself."
+            )
+        return torch.zeros((1, h, w), dtype=torch.float32)
+
+
+# ---------------------------------------------------------------------------
 # Mode A — precomputed
 # ---------------------------------------------------------------------------
 
@@ -399,7 +433,10 @@ def build_mask_provider(cfg) -> MaskProvider:
             cellprob_threshold=cfg.mask_provider.cellpose_cellprob_threshold,
         )
 
+    if mode == "none":
+        return NullMaskProvider()
+
     raise ValueError(
         f"Unknown mask_provider mode: '{mode}'. "
-        "Choose from: 'precomputed', 'cellpose_sam'."
+        "Choose from: 'precomputed', 'cellpose_sam', 'none'."
     )
