@@ -550,6 +550,7 @@ def _run_inference(
     mask_provider: MaskProvider,
     device: torch.device,
     batch_size: int,
+    on_image=None,
 ) -> Dict[Path, Image.Image]:
     """Run the generator over all patches and return a path→image mapping.
 
@@ -605,7 +606,15 @@ def _run_inference(
         fake_he_batch = G(gen_input)                               # (B, 3, H, W) [-1,1]
 
         for i, p in enumerate(batch_paths):
-            results[p] = _tensor_to_pil(fake_he_batch[i])
+            img = _tensor_to_pil(fake_he_batch[i])
+            if on_image is not None:
+                # Written as it is produced. Holding every result until the end cost
+                # 786 KB per 512 px patch, so an 18,233-window run needed 14 GB and was
+                # killed before a single file appeared. Mosaic mode still needs them all
+                # in hand, and says so by passing no callback.
+                on_image(p, img)
+            else:
+                results[p] = img
 
     return results
 
@@ -652,24 +661,30 @@ def main() -> None:
     patches = _find_tpaf_patches(input_dir)
     logger.info("Found %d TPAF patches under '%s'.", len(patches), input_dir)
 
-    # ── Inference ─────────────────────────────────────────────────────────
+    # ── Inference, writing as it goes ─────────────────────────────────────
+    # Mosaic mode needs every image at once to tile them, so it keeps the old
+    # behaviour; everything else streams to disk and stays flat in memory.
+    saved = [0]
+
+    def _save(patch_path, img):
+        out_path = _output_path(patch_path, input_dir, output_dir)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        img.save(out_path)
+        saved[0] += 1
+
     results = _run_inference(
         G=G,
         patches=patches,
         mask_provider=mask_provider,
         device=device,
         batch_size=args.batch_size,
+        on_image=None if args.make_mosaic else _save,
     )
+    if args.make_mosaic:
+        for patch_path, img in results.items():
+            _save(patch_path, img)
 
-    # ── Save patches ──────────────────────────────────────────────────────
-    saved = 0
-    for patch_path, img in results.items():
-        out_path = _output_path(patch_path, input_dir, output_dir)
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        img.save(out_path)
-        saved += 1
-
-    logger.info("Saved %d generated H&E images to '%s'.", saved, output_dir)
+    logger.info("Saved %d generated H&E images to '%s'.", saved[0], output_dir)
 
     # ── Optional mosaic reconstruction ────────────────────────────────────
     if args.make_mosaic:
