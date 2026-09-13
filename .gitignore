@@ -80,3 +80,7 @@ tmp/
 
 # Local transfer/handoff notes (kept out of version control)
 SA-CUT_transfer.md
+
+# Patient tissue downloaded from Drive for checkpoint selection. Clinical
+# collaboration material, not ours to distribute.
+data/val_sample/
